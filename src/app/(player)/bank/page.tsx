@@ -25,6 +25,7 @@ export default async function BankPage({ searchParams }: BankPageProps) {
   }
 
   const [campaigns, params] = await Promise.all([getCampaignOptions(), searchParams]);
+  const hasCampaignOptions = campaigns.length > 0;
 
   return (
     <main className="app-shell">
@@ -67,29 +68,58 @@ export default async function BankPage({ searchParams }: BankPageProps) {
           <form action={loginBankAction} className="stack-form">
             <label className="field-label">
               Campaign
-              <select name="campaignId" defaultValue={campaigns[0]?.id}>
-                {campaigns.map((campaign) => (
-                  <option key={campaign.id} value={campaign.id}>
-                    {campaign.name}
-                  </option>
-                ))}
+              <select
+                name="campaignId"
+                defaultValue={campaigns[0]?.id ?? ""}
+                required
+                disabled={!hasCampaignOptions}
+              >
+                {hasCampaignOptions ? (
+                  campaigns.map((campaign) => (
+                    <option key={campaign.id} value={campaign.id}>
+                      {campaign.name}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">No active campaigns available</option>
+                )}
               </select>
             </label>
             <label className="field-label">
               Character name
-              <input name="characterName" placeholder="Miri Vale" required />
+              <input
+                autoComplete="nickname"
+                name="characterName"
+                minLength={2}
+                placeholder="Miri Vale"
+                required
+              />
             </label>
             <label className="field-label">
               PIN
-              <input name="pin" placeholder="2413" required type="password" />
+              <input
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                maxLength={8}
+                minLength={4}
+                name="pin"
+                placeholder="2413"
+                required
+                type="password"
+              />
             </label>
             <div className="button-row">
-              <button className="button" type="submit">
+              <button className="button" type="submit" disabled={!hasCampaignOptions}>
                 Open bank
               </button>
             </div>
           </form>
 
+          {!hasCampaignOptions ? (
+            <p className="error-banner">
+              No active campaigns are available for player access yet.
+            </p>
+          ) : null}
           {params.error === "invalid" ? (
             <p className="error-banner">
               No matching campaign, character, and PIN combination was found.

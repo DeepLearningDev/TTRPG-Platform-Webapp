@@ -1,25 +1,22 @@
 "use server";
 
+import { CampaignStatus } from "@prisma/client";
 import { redirect } from "next/navigation";
-import { z } from "zod";
 import {
   calculateLockoutUntil,
   isLockedOut,
   normalizeCharacterNameKey,
 } from "@/lib/bank-security";
-import { authenticateBankAccess } from "@/lib/campaign-vault";
 import { clearPlayerSession, setPlayerSession } from "@/lib/player-session";
 import { prisma } from "@/lib/prisma";
 import { verifyPin } from "@/lib/pin";
-
-const loginSchema = z.object({
-  campaignId: z.string().min(1),
-  characterName: z.string().min(2),
-  pin: z.string().min(4).max(12),
-});
+import {
+  bankLoginSchema,
+  normalizeBankCharacterName,
+} from "@/lib/player-bank-login";
 
 export async function loginBankAction(formData: FormData) {
-  const parsedPayload = loginSchema.safeParse({
+  const parsedPayload = bankLoginSchema.safeParse({
     campaignId: formData.get("campaignId"),
     characterName: formData.get("characterName"),
     pin: formData.get("pin"),
@@ -31,31 +28,51 @@ export async function loginBankAction(formData: FormData) {
   }
 
   const payload = parsedPayload.data;
-  const characterNameKey = normalizeCharacterNameKey(payload.characterName);
+  const characterName = normalizeBankCharacterName(payload.characterName);
+  const characterNameKey = normalizeCharacterNameKey(characterName);
 
-  if (!characterNameKey) {
+  if (!characterNameKey || !characterName) {
     await clearPlayerSession();
     redirect("/bank?error=invalid");
   }
 
-  const loginAttempt = await prisma.bankLoginAttempt.findUnique({
-    where: {
-      campaignId_characterNameKey: {
-        campaignId: payload.campaignId,
-        characterNameKey,
+  const [loginAttempt, characters] = await Promise.all([
+    prisma.bankLoginAttempt.findUnique({
+      where: {
+        campaignId_characterNameKey: {
+          campaignId: payload.campaignId,
+          characterNameKey,
+        },
       },
-    },
-  });
+    }),
+    prisma.character.findMany({
+      where: {
+        campaignId: payload.campaignId,
+        bankAccess: {
+          isNot: null,
+        },
+        campaign: {
+          status: CampaignStatus.ACTIVE,
+        },
+      },
+      include: {
+        bankAccess: true,
+        campaign: true,
+      },
+    }),
+  ]);
 
   if (isLockedOut(loginAttempt?.lockedUntil)) {
     await clearPlayerSession();
     redirect("/bank?error=locked");
   }
 
-  const character = await authenticateBankAccess({
-    campaignId: payload.campaignId,
-    characterName: payload.characterName,
-  });
+  const matchingCharacters = characters.filter(
+    (candidate) =>
+      normalizeCharacterNameKey(normalizeBankCharacterName(candidate.name)) === characterNameKey,
+  );
+
+  const character = matchingCharacters.length === 1 ? matchingCharacters[0] : null;
 
   if (character?.bankAccess && isLockedOut(character.bankAccess.lockedUntil)) {
     await clearPlayerSession();
@@ -66,40 +83,42 @@ export async function loginBankAction(formData: FormData) {
     const failedAttemptCount = (loginAttempt?.failedAttemptCount ?? 0) + 1;
     const lockedUntil = calculateLockoutUntil(failedAttemptCount);
 
-    await prisma.bankLoginAttempt.upsert({
-      where: {
-        campaignId_characterNameKey: {
+    await prisma.$transaction(async (tx) => {
+      await tx.bankLoginAttempt.upsert({
+        where: {
+          campaignId_characterNameKey: {
+            campaignId: payload.campaignId,
+            characterNameKey,
+          },
+        },
+        create: {
           campaignId: payload.campaignId,
           characterNameKey,
+          failedAttemptCount,
+          lockedUntil,
+          lastAttemptAt: new Date(),
         },
-      },
-      create: {
-        campaignId: payload.campaignId,
-        characterNameKey,
-        failedAttemptCount,
-        lockedUntil,
-        lastAttemptAt: new Date(),
-      },
-      update: {
-        failedAttemptCount,
-        lockedUntil,
-        lastAttemptAt: new Date(),
-      },
-    });
-
-    if (character?.bankAccess) {
-      const failedLoginCount = character.bankAccess.failedLoginCount + 1;
-
-      await prisma.bankAccess.update({
-        where: {
-          id: character.bankAccess.id,
-        },
-        data: {
-          failedLoginCount,
-          lockedUntil: calculateLockoutUntil(failedLoginCount),
+        update: {
+          failedAttemptCount,
+          lockedUntil,
+          lastAttemptAt: new Date(),
         },
       });
-    }
+
+      if (character?.bankAccess) {
+        const failedLoginCount = character.bankAccess.failedLoginCount + 1;
+
+        await tx.bankAccess.update({
+          where: {
+            id: character.bankAccess.id,
+          },
+          data: {
+            failedLoginCount,
+            lockedUntil: calculateLockoutUntil(failedLoginCount),
+          },
+        });
+      }
+    });
 
     await clearPlayerSession();
     redirect("/bank?error=invalid");

@@ -109,21 +109,25 @@ export default async function BankAccountPage() {
               <h2>What changed recently</h2>
             </div>
           </div>
-          <div className="list-card">
-            {account.ledgerEntries.slice(0, 8).map((entry) => (
-              <div className="list-item" key={entry.id}>
-                <div className="card-header">
-                  <strong>{formatEnumLabel(entry.scope)}</strong>
-                  <span className="tag">{formatEnumLabel(entry.entryType)}</span>
+          {account.ledgerEntries.length > 0 ? (
+            <div className="list-card">
+              {account.ledgerEntries.slice(0, 8).map((entry) => (
+                <div className="list-item" key={entry.id}>
+                  <div className="card-header">
+                    <strong>{formatEnumLabel(entry.scope)}</strong>
+                    <span className="tag">{formatEnumLabel(entry.entryType)}</span>
+                  </div>
+                  <div className="muted">
+                    {entry.lootItem ? `${entry.lootItem.name} × ${entry.quantity}` : "Gold movement"} ·{" "}
+                    {formatCopperAsGold(entry.goldDelta)}
+                  </div>
+                  <p>{entry.note}</p>
                 </div>
-                <div className="muted">
-                  {entry.lootItem ? `${entry.lootItem.name} × ${entry.quantity}` : "Gold movement"} ·{" "}
-                  {formatCopperAsGold(entry.goldDelta)}
-                </div>
-                <p>{entry.note}</p>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="callout">No ledger activity has been recorded yet.</div>
+          )}
         </article>
       </section>
 
