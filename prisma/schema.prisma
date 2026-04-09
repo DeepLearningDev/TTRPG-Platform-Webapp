@@ -1,0 +1,199 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum CampaignStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum NpcType {
+  STANDARD
+  COMPANION
+}
+
+enum EncounterDifficulty {
+  EASY
+  MEDIUM
+  HARD
+  DEADLY
+  BOSS
+}
+
+enum HoldingScope {
+  INVENTORY
+  BANK
+}
+
+enum LedgerEntryType {
+  AWARD
+  DEPOSIT
+  WITHDRAWAL
+  TRANSFER
+  PURCHASE
+  QUEST_REWARD
+}
+
+enum LootRarity {
+  COMMON
+  UNCOMMON
+  RARE
+  VERY_RARE
+  LEGENDARY
+}
+
+enum LootKind {
+  ARMOR
+  WEAPON
+  WONDROUS
+  CONSUMABLE
+  TOOL
+  TREASURE
+}
+
+enum MonsterSourceType {
+  SRD
+  OPEN
+  CUSTOM
+}
+
+model Campaign {
+  id            String                  @id @default(cuid())
+  slug          String                  @unique
+  name          String
+  status        CampaignStatus          @default(ACTIVE)
+  setting       String
+  summary       String
+  sessionNight  String?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  characters    Character[]
+  npcs          Npc[]
+  monsters      MonsterCompendiumEntry[]
+  encounters    Encounter[]
+  lootItems     LootItem[]
+  ledgerEntries InventoryLedgerEntry[]
+}
+
+model Character {
+  id            String                 @id @default(cuid())
+  campaignId    String
+  name          String
+  classRole     String
+  level         Int
+  playerName    String
+  notes         String?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  campaign      Campaign               @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  bankAccess    BankAccess?
+  ledgerEntries InventoryLedgerEntry[]
+
+  @@unique([campaignId, name])
+}
+
+model BankAccess {
+  id          String    @id @default(cuid())
+  characterId String    @unique
+  pinHash     String
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+}
+
+model Npc {
+  id                String    @id @default(cuid())
+  campaignId        String
+  name              String
+  title             String?
+  type              NpcType   @default(STANDARD)
+  tags              String    @default("")
+  surfaceBlurb      String
+  tableHooks        String
+  persistentNotes   String
+  faction           String?
+  relationshipNotes String?
+  isArchived        Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  campaign          Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+}
+
+model MonsterCompendiumEntry {
+  id                String            @id @default(cuid())
+  campaignId        String?
+  name              String
+  challengeRating   String
+  monsterType       String
+  environment       String
+  tags              String            @default("")
+  specialDrops      String            @default("")
+  source            MonsterSourceType @default(SRD)
+  isCustom          Boolean           @default(false)
+  basedOnName       String?
+  notes             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  campaign          Campaign?         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  encounterMonsters EncounterMonster[]
+}
+
+model Encounter {
+  id          String               @id @default(cuid())
+  campaignId  String
+  title       String
+  difficulty  EncounterDifficulty
+  partyLevel  Int
+  notes       String?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  campaign    Campaign             @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  monsters    EncounterMonster[]
+}
+
+model EncounterMonster {
+  id          String                 @id @default(cuid())
+  encounterId String
+  monsterId   String
+  quantity    Int                    @default(1)
+  notes       String?
+  encounter   Encounter              @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+  monster     MonsterCompendiumEntry @relation(fields: [monsterId], references: [id], onDelete: Cascade)
+}
+
+model LootItem {
+  id            String                 @id @default(cuid())
+  campaignId    String
+  name          String
+  rarity        LootRarity
+  kind          LootKind
+  description   String
+  sourceTag     String?
+  goldValue     Int?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  campaign      Campaign               @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  ledgerEntries InventoryLedgerEntry[]
+}
+
+model InventoryLedgerEntry {
+  id          String          @id @default(cuid())
+  campaignId  String
+  characterId String
+  lootItemId  String?
+  scope       HoldingScope
+  entryType   LedgerEntryType
+  quantity    Int             @default(0)
+  goldDelta   Int             @default(0)
+  note        String
+  createdAt   DateTime        @default(now())
+  campaign    Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  character   Character       @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  lootItem    LootItem?       @relation(fields: [lootItemId], references: [id], onDelete: SetNull)
+}
