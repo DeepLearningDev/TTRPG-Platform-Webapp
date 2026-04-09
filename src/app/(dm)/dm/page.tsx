@@ -169,6 +169,203 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           <div className="panel-header">
             <div>
               <span className="section-kicker">
+                <Compass size={14} />
+                Campaign registry
+              </span>
+              <h2>Create and rotate campaigns</h2>
+            </div>
+          </div>
+
+          <form action={createCampaignAction} className="stack-form">
+            <div className="subgrid">
+              <label className="field-label">
+                Campaign name
+                <input name="name" placeholder="Shadows of Saltreach" required />
+              </label>
+              <label className="field-label">
+                Session night
+                <input name="sessionNight" placeholder="Wednesday" />
+              </label>
+            </div>
+            <label className="field-label">
+              Setting
+              <input
+                name="setting"
+                placeholder="Coastal politics, haunted lighthouses, and reef routes"
+                required
+              />
+            </label>
+            <label className="field-label">
+              Summary
+              <textarea
+                name="summary"
+                placeholder="Short campaign spine for the DM and player surfaces."
+                required
+              />
+            </label>
+            <div className="button-row">
+              <button className="button" type="submit">
+                Create campaign
+              </button>
+            </div>
+          </form>
+
+          <div className="list-card">
+            {campaigns.map((option) => (
+              <div className="list-item" key={option.id}>
+                <div className="card-header">
+                  <div>
+                    <strong>{option.name}</strong>
+                    <div className="muted">{option.setting}</div>
+                  </div>
+                  <span className="tag">{option.sessionNight ?? "TBD"}</span>
+                </div>
+                <div className="button-row">
+                  <Link className="button-secondary" href={`/dm?campaign=${option.slug}`}>
+                    Open
+                  </Link>
+                  {option.id === campaign.id ? null : (
+                    <form action={archiveCampaignAction}>
+                      <input type="hidden" name="id" value={option.id} />
+                      <button className="button-danger" type="submit">
+                        Archive
+                      </button>
+                    </form>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <Coins size={14} />
+                Party registry
+              </span>
+              <h2>Manage characters and bank PINs</h2>
+            </div>
+          </div>
+
+          <form action={createCharacterAction} className="stack-form">
+            <input type="hidden" name="campaignId" value={campaign.id} />
+            <input type="hidden" name="campaignSlug" value={campaign.slug} />
+            <div className="subgrid">
+              <label className="field-label">
+                Character name
+                <input name="name" placeholder="Kael Thorn" required />
+              </label>
+              <label className="field-label">
+                Player name
+                <input name="playerName" placeholder="Rin" required />
+              </label>
+              <label className="field-label">
+                Class / role
+                <input name="classRole" placeholder="Wizard / Support" required />
+              </label>
+              <label className="field-label">
+                Level
+                <input defaultValue="1" max="20" min="1" name="level" type="number" />
+              </label>
+            </div>
+            <div className="subgrid">
+              <label className="field-label">
+                Bank PIN
+                <input
+                  name="pin"
+                  pattern="\d{4,8}"
+                  placeholder="4821"
+                  required
+                  type="password"
+                />
+              </label>
+              <label className="field-label">
+                Notes
+                <input name="notes" placeholder="Handles ritual supplies and scroll cases" />
+              </label>
+            </div>
+            <div className="button-row">
+              <button className="button" type="submit">
+                Add character
+              </button>
+            </div>
+          </form>
+
+          <div className="card-stack">
+            {campaign.characters.map((character) => (
+              <div className="item-card" key={character.id}>
+                <div className="card-header">
+                  <div>
+                    <div className="value-line">{character.name}</div>
+                    <div className="muted">
+                      {character.playerName} · L{character.level} {character.classRole}
+                    </div>
+                  </div>
+                  <span className="tag">
+                    {character.bankAccess ? "PIN active" : "No bank access"}
+                  </span>
+                </div>
+                <form action={updateCharacterAction} className="stack-form">
+                  <input type="hidden" name="id" value={character.id} />
+                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                  <div className="subgrid">
+                    <label className="field-label">
+                      Name
+                      <input defaultValue={character.name} name="name" required />
+                    </label>
+                    <label className="field-label">
+                      Player
+                      <input defaultValue={character.playerName} name="playerName" required />
+                    </label>
+                    <label className="field-label">
+                      Class / role
+                      <input defaultValue={character.classRole} name="classRole" required />
+                    </label>
+                    <label className="field-label">
+                      Level
+                      <input
+                        defaultValue={character.level}
+                        max="20"
+                        min="1"
+                        name="level"
+                        type="number"
+                      />
+                    </label>
+                  </div>
+                  <div className="subgrid">
+                    <label className="field-label">
+                      Notes
+                      <input defaultValue={character.notes ?? ""} name="notes" />
+                    </label>
+                    <label className="field-label">
+                      Rotate bank PIN
+                      <input
+                        name="pin"
+                        pattern="\d{4,8}"
+                        placeholder="Leave blank to keep current"
+                        type="password"
+                      />
+                    </label>
+                  </div>
+                  <div className="button-row">
+                    <button className="button-secondary" type="submit">
+                      Update character
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ))}
+          </div>
+        </article>
+      </section>
+
+      <section className="two-column-grid">
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
                 <ScrollText size={14} />
                 NPC Builder
               </span>
@@ -624,6 +821,50 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             <div className="button-row">
               <button className="button-secondary" type="submit">
                 Filter compendium
+              </button>
+            </div>
+          </form>
+
+          {params.sync ? (
+            <p className="callout">
+              Synced {params.sync} from {params.source ?? "configured source"} with the
+              bounded server-side importer.
+            </p>
+          ) : null}
+
+          <form action={syncCompendiumAction} className="stack-form">
+            <input type="hidden" name="campaignSlug" value={campaign.slug} />
+            <div className="subgrid">
+              <label className="field-label">
+                Import kind
+                <select defaultValue="monsters" name="kind">
+                  <option value="monsters">Monsters</option>
+                  <option value="magic-items">Magic items</option>
+                </select>
+              </label>
+              <label className="field-label">
+                Primary source
+                <select defaultValue="OPEN5E" name="source">
+                  <option value="OPEN5E">Open5e with fallback</option>
+                  <option value="DND5E">D&D 5e SRD fallback only</option>
+                </select>
+              </label>
+              <label className="field-label">
+                Search filter
+                <input name="search" placeholder="goblin, shield, dragon" />
+              </label>
+              <label className="field-label">
+                Page size
+                <input defaultValue="6" max="10" min="1" name="pageSize" type="number" />
+              </label>
+              <label className="field-label">
+                Page limit
+                <input defaultValue="1" max="2" min="1" name="pageLimit" type="number" />
+              </label>
+            </div>
+            <div className="button-row">
+              <button className="button-secondary" type="submit">
+                Sync compendium slice
               </button>
             </div>
           </form>

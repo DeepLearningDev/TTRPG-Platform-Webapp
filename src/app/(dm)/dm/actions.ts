@@ -102,6 +102,11 @@ export async function createCampaignAction(formData: FormData) {
   });
 
   const baseSlug = slugifyCampaignName(payload.name);
+
+  if (!baseSlug) {
+    redirect("/dm?error=invalid-campaign-name");
+  }
+
   const existingCount = await prisma.campaign.count({
     where: {
       slug: {
