@@ -27,6 +27,15 @@ Planned later:
 - advanced loot generation and party distribution
 - casino minigames and pet care
 
+## Alpha Scope
+
+Alpha is tracked in [ALPHA_CHECKLIST.md](./ALPHA_CHECKLIST.md). The current priority is:
+
+- hardening DM and player mutations
+- text-based loot generation and party distribution
+- text-based crafting gameplay with recipes, materials, and roll resolution
+- broader player-facing interaction loops where needed
+
 ## Local Setup
 
 1. Install dependencies.
