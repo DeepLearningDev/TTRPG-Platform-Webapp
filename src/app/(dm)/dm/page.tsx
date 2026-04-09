@@ -50,7 +50,43 @@ type DmPageProps = {
     monster?: string;
     sync?: string;
     source?: string;
+    error?: string;
   }>;
+};
+
+const dmErrorMessages: Record<string, string> = {
+  "invalid-campaign-state":
+    "That campaign or record could not be used because it no longer matches the current DM workspace.",
+  "invalid-character-state":
+    "That character could not be saved because the submitted data was incomplete or mismatched.",
+  "duplicate-character-name":
+    "A character with that name already exists in this campaign.",
+  "invalid-npc-state":
+    "That NPC card could not be saved because the submitted data was incomplete or mismatched.",
+  "duplicate-npc-name":
+    "An NPC with that name already exists in this campaign.",
+  "invalid-encounter-state":
+    "That encounter could not be saved because the selected monster no longer belongs to this campaign.",
+  "invalid-loot-state":
+    "That loot award could not be completed because the selected character or item was invalid.",
+  "invalid-quest-state":
+    "That quest could not be saved because the selected assignee or quest no longer matched this campaign.",
+  "duplicate-quest-title":
+    "A quest with that title already exists in this campaign.",
+  "invalid-storefront-state":
+    "That storefront change could not be saved because the selected shop or item was invalid.",
+  "duplicate-storefront-name":
+    "A storefront with that name already exists in this campaign.",
+  "invalid-mail-state":
+    "That mail reply could not be added because the thread no longer matched this campaign.",
+  "invalid-crafting-state":
+    "That crafting change could not be saved because the recipe, character, or job was invalid.",
+  "duplicate-recipe-name":
+    "A crafting recipe with that name already exists in this campaign.",
+  "invalid-campaign-name":
+    "Please choose a different campaign name.",
+  "duplicate-campaign-name":
+    "A campaign with that name already exists.",
 };
 
 export default async function DmPage({ searchParams }: DmPageProps) {
@@ -60,10 +96,12 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     slug: params.campaign,
     monsterQuery: params.monster,
   });
+  const errorMessage = params.error ? dmErrorMessages[params.error] ?? "Unable to save that change." : null;
 
   if (!data) {
     return (
       <main className="app-shell">
+        {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
         <p className="error-banner">No campaigns are available yet.</p>
       </main>
     );
@@ -115,6 +153,8 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           </form>
         </div>
       </header>
+
+      {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
 
       <section className="hero">
         <span className="section-kicker">

@@ -21,7 +21,6 @@ import {
   readBooleanField,
   readOptionalNumberField,
   readOptionalTextField,
-  readTextField,
 } from "@/lib/form-fields";
 import {
   clearDmSession,
@@ -45,9 +44,29 @@ const npcSchema = z.object({
   relationshipNotes: z.string().optional(),
 });
 
+type CampaignMutationContext = {
+  id: string;
+  slug: string;
+  status: CampaignStatus;
+  name: string;
+};
+
 function redirectToCampaign(slug: string): never {
   revalidatePath("/dm");
   redirect(`/dm?campaign=${slug}`);
+}
+
+function redirectToCampaignError(
+  slug: string | null | undefined,
+  error: string,
+): never {
+  revalidatePath("/dm");
+  redirect(slug ? `/dm?campaign=${slug}&error=${error}` : `/dm?error=${error}`);
+}
+
+function redirectToDmError(error: string): never {
+  revalidatePath("/dm");
+  redirect(`/dm?error=${error}`);
 }
 
 function slugifyCampaignName(value: string) {
@@ -56,6 +75,67 @@ function slugifyCampaignName(value: string) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function parseMutationPayload<T extends z.ZodTypeAny>(
+  schema: T,
+  input: unknown,
+  options: {
+    campaignSlug?: string;
+    error: string;
+  },
+): z.infer<T> {
+  const parsed = schema.safeParse(input);
+
+  if (!parsed.success) {
+    redirectToCampaignError(options.campaignSlug, options.error);
+  }
+
+  return parsed.data;
+}
+
+async function resolveCampaignMutationContext(options: {
+  campaignSlug: string;
+  campaignId?: string | null;
+  allowArchived?: boolean;
+}): Promise<CampaignMutationContext> {
+  const campaign = await prisma.campaign.findFirst({
+    where: {
+      slug: options.campaignSlug,
+      ...(options.allowArchived ? {} : { status: CampaignStatus.ACTIVE }),
+    },
+    select: {
+      id: true,
+      slug: true,
+      name: true,
+      status: true,
+    },
+  });
+
+  if (!campaign) {
+    redirectToCampaignError(options.campaignSlug, "invalid-campaign-state");
+  }
+
+  if (options.campaignId && options.campaignId !== campaign.id) {
+    redirectToCampaignError(campaign.slug, "invalid-campaign-state");
+  }
+
+  return campaign;
+}
+
+async function ensureUniqueCampaignName(name: string) {
+  const existing = await prisma.campaign.findFirst({
+    where: {
+      name,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (existing) {
+    redirectToDmError("duplicate-campaign-name");
+  }
 }
 
 export async function loginDmAction(formData: FormData) {
@@ -89,23 +169,31 @@ export async function logoutDmAction() {
 export async function createCampaignAction(formData: FormData) {
   await requireDmSession();
 
-  const payload = z.object({
-    name: z.string().min(3),
-    setting: z.string().min(6),
-    summary: z.string().min(12),
-    sessionNight: z.string().optional(),
-  }).parse({
-    name: formData.get("name"),
-    setting: formData.get("setting"),
-    summary: formData.get("summary"),
-    sessionNight: formData.get("sessionNight") || undefined,
-  });
+  const payload = parseMutationPayload(
+    z.object({
+      name: z.string().min(3),
+      setting: z.string().min(6),
+      summary: z.string().min(12),
+      sessionNight: z.string().optional(),
+    }),
+    {
+      name: formData.get("name"),
+      setting: formData.get("setting"),
+      summary: formData.get("summary"),
+      sessionNight: formData.get("sessionNight") || undefined,
+    },
+    {
+      error: "invalid-campaign-state",
+    },
+  );
 
   const baseSlug = slugifyCampaignName(payload.name);
 
   if (!baseSlug) {
-    redirect("/dm?error=invalid-campaign-name");
+    redirectToDmError("invalid-campaign-name");
   }
+
+  await ensureUniqueCampaignName(payload.name.trim());
 
   const existingCount = await prisma.campaign.count({
     where: {
@@ -135,14 +223,19 @@ export async function archiveCampaignAction(formData: FormData) {
 
   const id = z.string().min(1).parse(formData.get("id"));
 
-  await prisma.campaign.update({
+  const result = await prisma.campaign.updateMany({
     where: {
       id,
+      status: CampaignStatus.ACTIVE,
     },
     data: {
       status: CampaignStatus.ARCHIVED,
     },
   });
+
+  if (result.count === 0) {
+    redirectToDmError("invalid-campaign-state");
+  }
 
   revalidatePath("/dm");
   redirect("/dm");
@@ -153,29 +246,57 @@ const pinSchema = z.string().regex(/^\d{4,8}$/);
 export async function createCharacterAction(formData: FormData) {
   await requireDmSession();
 
-  const payload = z.object({
-    campaignId: z.string().min(1),
-    campaignSlug: z.string().min(1),
-    name: z.string().min(2),
-    classRole: z.string().min(2),
-    level: z.coerce.number().int().min(1).max(20),
-    playerName: z.string().min(2),
-    notes: z.string().optional(),
-    pin: pinSchema,
-  }).parse({
-    campaignId: formData.get("campaignId"),
-    campaignSlug: formData.get("campaignSlug"),
-    name: formData.get("name"),
-    classRole: formData.get("classRole"),
-    level: formData.get("level"),
-    playerName: formData.get("playerName"),
-    notes: formData.get("notes") || undefined,
-    pin: formData.get("pin"),
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const rawCampaignId = String(formData.get("campaignId") ?? "").trim() || null;
+  const payload = parseMutationPayload(
+    z.object({
+      campaignId: z.string().min(1),
+      campaignSlug: z.string().min(1),
+      name: z.string().min(2),
+      classRole: z.string().min(2),
+      level: z.coerce.number().int().min(1).max(20),
+      playerName: z.string().min(2),
+      notes: z.string().optional(),
+      pin: pinSchema,
+    }),
+    {
+      campaignId: formData.get("campaignId"),
+      campaignSlug: formData.get("campaignSlug"),
+      name: formData.get("name"),
+      classRole: formData.get("classRole"),
+      level: formData.get("level"),
+      playerName: formData.get("playerName"),
+      notes: formData.get("notes") || undefined,
+      pin: formData.get("pin"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-character-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: rawCampaignId || payload.campaignId,
   });
+
+  const duplicateCharacter = await prisma.character.findFirst({
+    where: {
+      campaignId: campaign.id,
+      name: payload.name.trim(),
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (duplicateCharacter) {
+    redirectToCampaignError(campaign.slug, "duplicate-character-name");
+  }
 
   await prisma.character.create({
     data: {
-      campaignId: payload.campaignId,
+      campaignId: campaign.id,
       name: payload.name.trim(),
       classRole: payload.classRole.trim(),
       level: payload.level,
@@ -189,35 +310,79 @@ export async function createCharacterAction(formData: FormData) {
     },
   });
 
-  redirectToCampaign(payload.campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function updateCharacterAction(formData: FormData) {
   await requireDmSession();
 
-  const payload = z.object({
-    id: z.string().min(1),
-    campaignSlug: z.string().min(1),
-    name: z.string().min(2),
-    classRole: z.string().min(2),
-    level: z.coerce.number().int().min(1).max(20),
-    playerName: z.string().min(2),
-    notes: z.string().optional(),
-    pin: z.string().optional(),
-  }).parse({
-    id: formData.get("id"),
-    campaignSlug: formData.get("campaignSlug"),
-    name: formData.get("name"),
-    classRole: formData.get("classRole"),
-    level: formData.get("level"),
-    playerName: formData.get("playerName"),
-    notes: formData.get("notes") || undefined,
-    pin: formData.get("pin") || undefined,
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    z.object({
+      id: z.string().min(1),
+      campaignSlug: z.string().min(1),
+      name: z.string().min(2),
+      classRole: z.string().min(2),
+      level: z.coerce.number().int().min(1).max(20),
+      playerName: z.string().min(2),
+      notes: z.string().optional(),
+      pin: z.string().optional(),
+    }),
+    {
+      id: formData.get("id"),
+      campaignSlug: formData.get("campaignSlug"),
+      name: formData.get("name"),
+      classRole: formData.get("classRole"),
+      level: formData.get("level"),
+      playerName: formData.get("playerName"),
+      notes: formData.get("notes") || undefined,
+      pin: formData.get("pin") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-character-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
   });
 
-  await prisma.character.update({
+  const character = await prisma.character.findFirst({
     where: {
       id: payload.id,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!character) {
+    redirectToCampaignError(campaign.slug, "invalid-character-state");
+  }
+
+  const duplicateCharacter = await prisma.character.findFirst({
+    where: {
+      campaignId: campaign.id,
+      name: payload.name.trim(),
+      id: {
+        not: payload.id,
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (duplicateCharacter) {
+    redirectToCampaignError(campaign.slug, "duplicate-character-name");
+  }
+
+  await prisma.character.updateMany({
+    where: {
+      id: payload.id,
+      campaignId: campaign.id,
     },
     data: {
       name: payload.name.trim(),
@@ -249,28 +414,56 @@ export async function updateCharacterAction(formData: FormData) {
     });
   }
 
-  redirectToCampaign(payload.campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function createNpcAction(formData: FormData) {
   await requireDmSession();
 
-  const payload = npcSchema.parse({
-    campaignId: formData.get("campaignId"),
-    campaignSlug: formData.get("campaignSlug"),
-    name: formData.get("name"),
-    title: formData.get("title") || undefined,
-    type: formData.get("type"),
-    surfaceBlurb: formData.get("surfaceBlurb"),
-    tableHooks: formData.get("tableHooks"),
-    persistentNotes: formData.get("persistentNotes"),
-    faction: formData.get("faction") || undefined,
-    relationshipNotes: formData.get("relationshipNotes") || undefined,
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const rawCampaignId = String(formData.get("campaignId") ?? "").trim() || null;
+  const payload = parseMutationPayload(
+    npcSchema,
+    {
+      campaignId: formData.get("campaignId"),
+      campaignSlug: formData.get("campaignSlug"),
+      name: formData.get("name"),
+      title: formData.get("title") || undefined,
+      type: formData.get("type"),
+      surfaceBlurb: formData.get("surfaceBlurb"),
+      tableHooks: formData.get("tableHooks"),
+      persistentNotes: formData.get("persistentNotes"),
+      faction: formData.get("faction") || undefined,
+      relationshipNotes: formData.get("relationshipNotes") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-npc-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: rawCampaignId || payload.campaignId,
   });
+
+  const duplicateNpc = await prisma.npc.findFirst({
+    where: {
+      campaignId: campaign.id,
+      name: payload.name.trim(),
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (duplicateNpc) {
+    redirectToCampaignError(campaign.slug, "duplicate-npc-name");
+  }
 
   await prisma.npc.create({
     data: {
-      campaignId: payload.campaignId,
+      campaignId: campaign.id,
       name: payload.name.trim(),
       title: payload.title?.trim() || null,
       type: payload.type,
@@ -283,29 +476,74 @@ export async function createNpcAction(formData: FormData) {
     },
   });
 
-  redirectToCampaign(payload.campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function updateNpcAction(formData: FormData) {
   await requireDmSession();
 
-  const payload = npcSchema.extend({ id: z.string().min(1) }).parse({
-    id: formData.get("id"),
-    campaignId: formData.get("campaignId"),
-    campaignSlug: formData.get("campaignSlug"),
-    name: formData.get("name"),
-    title: formData.get("title") || undefined,
-    type: formData.get("type"),
-    surfaceBlurb: formData.get("surfaceBlurb"),
-    tableHooks: formData.get("tableHooks"),
-    persistentNotes: formData.get("persistentNotes"),
-    faction: formData.get("faction") || undefined,
-    relationshipNotes: formData.get("relationshipNotes") || undefined,
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    npcSchema.extend({ id: z.string().min(1) }),
+    {
+      id: formData.get("id"),
+      campaignId: formData.get("campaignId"),
+      campaignSlug: formData.get("campaignSlug"),
+      name: formData.get("name"),
+      title: formData.get("title") || undefined,
+      type: formData.get("type"),
+      surfaceBlurb: formData.get("surfaceBlurb"),
+      tableHooks: formData.get("tableHooks"),
+      persistentNotes: formData.get("persistentNotes"),
+      faction: formData.get("faction") || undefined,
+      relationshipNotes: formData.get("relationshipNotes") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-npc-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: String(formData.get("campaignId") ?? "").trim() || null,
   });
 
-  await prisma.npc.update({
+  const npc = await prisma.npc.findFirst({
     where: {
       id: payload.id,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!npc) {
+    redirectToCampaignError(campaign.slug, "invalid-npc-state");
+  }
+
+  const duplicateNpc = await prisma.npc.findFirst({
+    where: {
+      campaignId: campaign.id,
+      name: payload.name.trim(),
+      id: {
+        not: payload.id,
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (duplicateNpc) {
+    redirectToCampaignError(campaign.slug, "duplicate-npc-name");
+  }
+
+  await prisma.npc.updateMany({
+    where: {
+      id: payload.id,
+      campaignId: campaign.id,
     },
     data: {
       name: payload.name.trim(),
@@ -320,7 +558,7 @@ export async function updateNpcAction(formData: FormData) {
     },
   });
 
-  redirectToCampaign(payload.campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function archiveNpcAction(formData: FormData) {
@@ -328,15 +566,24 @@ export async function archiveNpcAction(formData: FormData) {
 
   const id = z.string().min(1).parse(formData.get("id"));
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
 
-  await prisma.npc.update({
+  const result = await prisma.npc.updateMany({
     where: {
       id,
+      campaignId: campaign.id,
+      isArchived: false,
     },
     data: {
       isArchived: true,
     },
   });
+
+  if (result.count === 0) {
+    redirectToCampaignError(campaign.slug, "invalid-npc-state");
+  }
 
   redirectToCampaign(campaignSlug);
 }
@@ -344,8 +591,9 @@ export async function archiveNpcAction(formData: FormData) {
 export async function createEncounterAction(formData: FormData) {
   await requireDmSession();
 
-  const payload = z
-    .object({
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    z.object({
       campaignId: z.string().min(1),
       campaignSlug: z.string().min(1),
       title: z.string().min(3),
@@ -354,8 +602,8 @@ export async function createEncounterAction(formData: FormData) {
       monsterId: z.string().min(1),
       quantity: z.coerce.number().int().min(1).max(20),
       notes: z.string().optional(),
-    })
-    .parse({
+    }),
+    {
       campaignId: formData.get("campaignId"),
       campaignSlug: formData.get("campaignSlug"),
       title: formData.get("title"),
@@ -364,11 +612,35 @@ export async function createEncounterAction(formData: FormData) {
       monsterId: formData.get("monsterId"),
       quantity: formData.get("quantity"),
       notes: formData.get("notes") || undefined,
-    });
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-encounter-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: String(formData.get("campaignId") ?? "").trim() || null,
+  });
+
+  const monster = await prisma.monsterCompendiumEntry.findFirst({
+    where: {
+      id: payload.monsterId,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!monster) {
+    redirectToCampaignError(campaign.slug, "invalid-encounter-state");
+  }
 
   await prisma.encounter.create({
     data: {
-      campaignId: payload.campaignId,
+      campaignId: campaign.id,
       title: payload.title.trim(),
       difficulty: payload.difficulty,
       partyLevel: payload.partyLevel,
@@ -384,14 +656,15 @@ export async function createEncounterAction(formData: FormData) {
     },
   });
 
-  redirectToCampaign(payload.campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function awardLootAction(formData: FormData) {
   await requireDmSession();
 
-  const payload = z
-    .object({
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    z.object({
       campaignId: z.string().min(1),
       campaignSlug: z.string().min(1),
       characterId: z.string().min(1),
@@ -403,8 +676,8 @@ export async function awardLootAction(formData: FormData) {
       customItemDescription: z.string().optional(),
       rarity: z.nativeEnum(LootRarity),
       kind: z.nativeEnum(LootKind),
-    })
-    .parse({
+    }),
+    {
       campaignId: formData.get("campaignId"),
       campaignSlug: formData.get("campaignSlug"),
       characterId: formData.get("characterId"),
@@ -416,15 +689,59 @@ export async function awardLootAction(formData: FormData) {
       customItemDescription: formData.get("customItemDescription") || undefined,
       rarity: formData.get("rarity"),
       kind: formData.get("kind"),
-    });
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: String(formData.get("campaignId") ?? "").trim() || null,
+  });
+
+  const character = await prisma.character.findFirst({
+    where: {
+      id: payload.characterId,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!character) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-state");
+  }
 
   const existingLootItemId = String(formData.get("lootItemId") ?? "").trim();
   let lootItemId: string | null = existingLootItemId || null;
 
+  if (lootItemId) {
+    const existingLootItem = await prisma.lootItem.findFirst({
+      where: {
+        id: lootItemId,
+        campaignId: campaign.id,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!existingLootItem) {
+      redirectToCampaignError(campaign.slug, "invalid-loot-state");
+    }
+
+    if (payload.quantity < 1) {
+      redirectToCampaignError(campaign.slug, "invalid-loot-state");
+    }
+  }
+
   if (!lootItemId && payload.customItemName?.trim()) {
     const lootItem = await prisma.lootItem.create({
       data: {
-        campaignId: payload.campaignId,
+        campaignId: campaign.id,
         name: payload.customItemName.trim(),
         description:
           payload.customItemDescription?.trim() || "Custom DM-authored item.",
@@ -437,23 +754,23 @@ export async function awardLootAction(formData: FormData) {
   }
 
   if (!lootItemId && payload.goldDelta <= 0) {
-    redirectToCampaign(payload.campaignSlug);
+    redirectToCampaignError(campaign.slug, "invalid-loot-state");
   }
 
   await prisma.inventoryLedgerEntry.create({
     data: {
-      campaignId: payload.campaignId,
+      campaignId: campaign.id,
       characterId: payload.characterId,
       lootItemId,
       scope: payload.scope,
       entryType: LedgerEntryType.AWARD,
-      quantity: lootItemId ? payload.quantity || 1 : 0,
+      quantity: lootItemId ? payload.quantity : 0,
       goldDelta: payload.goldDelta,
       note: payload.note.trim(),
     },
   });
 
-  redirectToCampaign(payload.campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 const questSchema = z.object({
@@ -470,20 +787,63 @@ const questSchema = z.object({
 export async function createQuestAction(formData: FormData) {
   await requireDmSession();
 
-  const payload = questSchema.parse({
-    campaignId: formData.get("campaignId"),
-    campaignSlug: formData.get("campaignSlug"),
-    title: formData.get("title"),
-    objective: formData.get("objective"),
-    rewardGold: formData.get("rewardGold"),
-    rewardText: formData.get("rewardText") || undefined,
-    assigneeCharacterId: formData.get("assigneeCharacterId") || undefined,
-    notes: formData.get("notes") || undefined,
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    questSchema,
+    {
+      campaignId: formData.get("campaignId"),
+      campaignSlug: formData.get("campaignSlug"),
+      title: formData.get("title"),
+      objective: formData.get("objective"),
+      rewardGold: formData.get("rewardGold"),
+      rewardText: formData.get("rewardText") || undefined,
+      assigneeCharacterId: formData.get("assigneeCharacterId") || undefined,
+      notes: formData.get("notes") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-quest-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: String(formData.get("campaignId") ?? "").trim() || null,
   });
+
+  if (payload.assigneeCharacterId) {
+    const assignee = await prisma.character.findFirst({
+      where: {
+        id: payload.assigneeCharacterId,
+        campaignId: campaign.id,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!assignee) {
+      redirectToCampaignError(campaign.slug, "invalid-quest-state");
+    }
+  }
+
+  const duplicateQuest = await prisma.quest.findFirst({
+    where: {
+      campaignId: campaign.id,
+      title: payload.title.trim(),
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (duplicateQuest) {
+    redirectToCampaignError(campaign.slug, "duplicate-quest-title");
+  }
 
   await prisma.quest.create({
     data: {
-      campaignId: payload.campaignId,
+      campaignId: campaign.id,
       title: payload.title.trim(),
       objective: payload.objective.trim(),
       rewardGold: payload.rewardGold,
@@ -493,31 +853,92 @@ export async function createQuestAction(formData: FormData) {
     },
   });
 
-  redirectToCampaign(payload.campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function updateQuestAction(formData: FormData) {
   await requireDmSession();
 
-  const payload = questSchema.extend({
-    id: z.string().min(1),
-    status: z.nativeEnum(QuestStatus),
-  }).parse({
-    id: formData.get("id"),
-    campaignId: formData.get("campaignId"),
-    campaignSlug: formData.get("campaignSlug"),
-    title: formData.get("title"),
-    objective: formData.get("objective"),
-    rewardGold: formData.get("rewardGold"),
-    rewardText: formData.get("rewardText") || undefined,
-    assigneeCharacterId: formData.get("assigneeCharacterId") || undefined,
-    notes: formData.get("notes") || undefined,
-    status: formData.get("status"),
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    questSchema.extend({
+      id: z.string().min(1),
+      status: z.nativeEnum(QuestStatus),
+    }),
+    {
+      id: formData.get("id"),
+      campaignId: formData.get("campaignId"),
+      campaignSlug: formData.get("campaignSlug"),
+      title: formData.get("title"),
+      objective: formData.get("objective"),
+      rewardGold: formData.get("rewardGold"),
+      rewardText: formData.get("rewardText") || undefined,
+      assigneeCharacterId: formData.get("assigneeCharacterId") || undefined,
+      notes: formData.get("notes") || undefined,
+      status: formData.get("status"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-quest-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: String(formData.get("campaignId") ?? "").trim() || null,
   });
 
-  await prisma.quest.update({
+  const quest = await prisma.quest.findFirst({
     where: {
       id: payload.id,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!quest) {
+    redirectToCampaignError(campaign.slug, "invalid-quest-state");
+  }
+
+  if (payload.assigneeCharacterId) {
+    const assignee = await prisma.character.findFirst({
+      where: {
+        id: payload.assigneeCharacterId,
+        campaignId: campaign.id,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!assignee) {
+      redirectToCampaignError(campaign.slug, "invalid-quest-state");
+    }
+  }
+
+  const duplicateQuest = await prisma.quest.findFirst({
+    where: {
+      campaignId: campaign.id,
+      title: payload.title.trim(),
+      id: {
+        not: payload.id,
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (duplicateQuest) {
+    redirectToCampaignError(campaign.slug, "duplicate-quest-title");
+  }
+
+  await prisma.quest.updateMany({
+    where: {
+      id: payload.id,
+      campaignId: campaign.id,
     },
     data: {
       title: payload.title.trim(),
@@ -530,7 +951,7 @@ export async function updateQuestAction(formData: FormData) {
     },
   });
 
-  redirectToCampaign(payload.campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function completeQuestAction(formData: FormData) {
@@ -538,21 +959,26 @@ export async function completeQuestAction(formData: FormData) {
 
   const id = z.string().min(1).parse(formData.get("id"));
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
 
-  const quest = await prisma.quest.findUnique({
+  const quest = await prisma.quest.findFirst({
     where: {
       id,
+      campaignId: campaign.id,
     },
   });
 
   if (!quest) {
-    redirectToCampaign(campaignSlug);
+    redirectToCampaignError(campaign.slug, "invalid-quest-state");
   }
 
   if (quest.status !== QuestStatus.COMPLETE) {
-    await prisma.quest.update({
+    await prisma.quest.updateMany({
       where: {
         id,
+        campaignId: campaign.id,
       },
       data: {
         status: QuestStatus.COMPLETE,
@@ -574,65 +1000,180 @@ export async function completeQuestAction(formData: FormData) {
     }
   }
 
-  redirectToCampaign(campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function createStorefrontAction(formData: FormData) {
   await requireDmSession();
 
-  const campaignId = z.string().min(1).parse(formData.get("campaignId"));
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
-  const name = z.string().min(3).parse(formData.get("name"));
-  const description = z.string().min(8).parse(formData.get("description"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+    campaignId: String(formData.get("campaignId") ?? "").trim() || null,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      name: z.string().min(3),
+      description: z.string().min(8),
+    }),
+    {
+      name: formData.get("name"),
+      description: formData.get("description"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-storefront-state",
+    },
+  );
+
+  const duplicateStorefront = await prisma.storefront.findFirst({
+    where: {
+      campaignId: campaign.id,
+      name: payload.name.trim(),
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (duplicateStorefront) {
+    redirectToCampaignError(campaign.slug, "duplicate-storefront-name");
+  }
 
   await prisma.storefront.create({
     data: {
-      campaignId,
-      name: name.trim(),
+      campaignId: campaign.id,
+      name: payload.name.trim(),
       keeperName: readOptionalTextField(formData, "keeperName"),
-      description: description.trim(),
+      description: payload.description.trim(),
       notes: readOptionalTextField(formData, "notes"),
     },
   });
 
-  redirectToCampaign(campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function updateStorefrontAction(formData: FormData) {
   await requireDmSession();
 
   const id = z.string().min(1).parse(formData.get("id"));
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
-  const status = z.nativeEnum(StorefrontStatus).parse(formData.get("status"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      name: z.string().min(1),
+      description: z.string().min(1),
+      status: z.nativeEnum(StorefrontStatus),
+    }),
+    {
+      name: formData.get("name"),
+      description: formData.get("description"),
+      status: formData.get("status"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-storefront-state",
+    },
+  );
 
-  await prisma.storefront.update({
+  const storefront = await prisma.storefront.findFirst({
     where: {
       id,
+      campaignId: campaign.id,
     },
-    data: {
-      name: readTextField(formData, "name"),
-      keeperName: readOptionalTextField(formData, "keeperName"),
-      description: readTextField(formData, "description"),
-      notes: readOptionalTextField(formData, "notes"),
-      status,
+    select: {
+      id: true,
     },
   });
 
-  redirectToCampaign(campaignSlug);
+  if (!storefront) {
+    redirectToCampaignError(campaign.slug, "invalid-storefront-state");
+  }
+
+  const duplicateStorefront = await prisma.storefront.findFirst({
+    where: {
+      campaignId: campaign.id,
+      name: payload.name.trim(),
+      id: {
+        not: id,
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (duplicateStorefront) {
+    redirectToCampaignError(campaign.slug, "duplicate-storefront-name");
+  }
+
+  await prisma.storefront.updateMany({
+    where: {
+      id,
+      campaignId: campaign.id,
+    },
+    data: {
+      name: payload.name.trim(),
+      keeperName: readOptionalTextField(formData, "keeperName"),
+      description: payload.description.trim(),
+      notes: readOptionalTextField(formData, "notes"),
+      status: payload.status,
+    },
+  });
+
+  redirectToCampaign(campaign.slug);
 }
 
 export async function createStorefrontOfferAction(formData: FormData) {
   await requireDmSession();
 
   const storefrontId = z.string().min(1).parse(formData.get("storefrontId"));
-  const campaignId = z.string().min(1).parse(formData.get("campaignId"));
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
-  const itemName = z.string().min(2).parse(formData.get("itemName"));
-  const itemDescription = z.string().min(4).parse(formData.get("itemDescription"));
-  const rarity = z.nativeEnum(LootRarity).parse(formData.get("rarity"));
-  const kind = z.nativeEnum(LootKind).parse(formData.get("kind"));
-  const priceGold = z.coerce.number().int().min(0).max(100_000).parse(formData.get("priceGold"));
-  const quantity = z.coerce.number().int().min(1).max(999).parse(formData.get("quantity"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+    campaignId: String(formData.get("campaignId") ?? "").trim() || null,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      itemName: z.string().min(2),
+      itemDescription: z.string().min(4),
+      rarity: z.nativeEnum(LootRarity),
+      kind: z.nativeEnum(LootKind),
+      priceGold: z.coerce.number().int().min(0).max(100_000),
+      quantity: z.coerce.number().int().min(1).max(999),
+    }),
+    {
+      itemName: formData.get("itemName"),
+      itemDescription: formData.get("itemDescription"),
+      rarity: formData.get("rarity"),
+      kind: formData.get("kind"),
+      priceGold: formData.get("priceGold"),
+      quantity: formData.get("quantity"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-storefront-state",
+    },
+  );
+
+  const storefront = await prisma.storefront.findFirst({
+    where: {
+      id: storefrontId,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!storefront) {
+    redirectToCampaignError(campaign.slug, "invalid-storefront-state");
+  }
 
   const lootItemId = readOptionalTextField(formData, "lootItemId") ?? undefined;
   let resolvedLootItemId = lootItemId;
@@ -640,48 +1181,97 @@ export async function createStorefrontOfferAction(formData: FormData) {
   if (!resolvedLootItemId) {
     const lootItem = await prisma.lootItem.create({
       data: {
-        campaignId,
-        name: itemName.trim(),
-        rarity,
-        kind,
-        description: itemDescription.trim(),
+        campaignId: campaign.id,
+        name: payload.itemName.trim(),
+        rarity: payload.rarity,
+        kind: payload.kind,
+        description: payload.itemDescription.trim(),
         sourceTag: "Storefront catalog",
       },
     });
 
     resolvedLootItemId = lootItem.id;
+  } else {
+    const existingLootItem = await prisma.lootItem.findFirst({
+      where: {
+        id: resolvedLootItemId,
+        campaignId: campaign.id,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!existingLootItem) {
+      redirectToCampaignError(campaign.slug, "invalid-storefront-state");
+    }
   }
 
   await prisma.storefrontOffer.create({
     data: {
       storefrontId,
       lootItemId: resolvedLootItemId,
-      itemName: itemName.trim(),
-      itemDescription: itemDescription.trim(),
-      rarity,
-      kind,
-      priceGold,
-      quantity,
+      itemName: payload.itemName.trim(),
+      itemDescription: payload.itemDescription.trim(),
+      rarity: payload.rarity,
+      kind: payload.kind,
+      priceGold: payload.priceGold,
+      quantity: payload.quantity,
       notes: readOptionalTextField(formData, "notes"),
     },
   });
 
-  redirectToCampaign(campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function recordStorefrontSaleAction(formData: FormData) {
   await requireDmSession();
 
   const offerId = z.string().min(1).parse(formData.get("offerId"));
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
-  const characterId = z.string().min(1).parse(formData.get("characterId"));
-  const scope = z.nativeEnum(HoldingScope).parse(formData.get("scope"));
-  const quantity = z.coerce.number().int().min(1).max(20).parse(formData.get("quantity"));
-  const note = z.string().min(4).parse(formData.get("note"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      characterId: z.string().min(1),
+      scope: z.nativeEnum(HoldingScope),
+      quantity: z.coerce.number().int().min(1).max(20),
+      note: z.string().min(4),
+    }),
+    {
+      characterId: formData.get("characterId"),
+      scope: formData.get("scope"),
+      quantity: formData.get("quantity"),
+      note: formData.get("note"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-storefront-state",
+    },
+  );
 
-  const offer = await prisma.storefrontOffer.findUnique({
+  const character = await prisma.character.findFirst({
+    where: {
+      id: payload.characterId,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!character) {
+    redirectToCampaignError(campaign.slug, "invalid-storefront-state");
+  }
+
+  const offer = await prisma.storefrontOffer.findFirst({
     where: {
       id: offerId,
+      storefront: {
+        campaignId: campaign.id,
+      },
     },
     include: {
       lootItem: true,
@@ -689,8 +1279,8 @@ export async function recordStorefrontSaleAction(formData: FormData) {
     },
   });
 
-  if (!offer || offer.quantity < quantity) {
-    redirectToCampaign(campaignSlug);
+  if (!offer || offer.quantity < payload.quantity) {
+    redirectToCampaignError(campaign.slug, "invalid-storefront-state");
   }
 
   let lootItemId = offer.lootItemId;
@@ -698,7 +1288,7 @@ export async function recordStorefrontSaleAction(formData: FormData) {
   if (!lootItemId) {
     const lootItem = await prisma.lootItem.create({
       data: {
-        campaignId: offer.storefront.campaignId,
+        campaignId: campaign.id,
         name: offer.itemName,
         rarity: offer.rarity,
         kind: offer.kind,
@@ -708,9 +1298,10 @@ export async function recordStorefrontSaleAction(formData: FormData) {
     });
 
     lootItemId = lootItem.id;
-    await prisma.storefrontOffer.update({
+    await prisma.storefrontOffer.updateMany({
       where: {
         id: offerId,
+        storefrontId: offer.storefrontId,
       },
       data: {
         lootItemId,
@@ -718,146 +1309,291 @@ export async function recordStorefrontSaleAction(formData: FormData) {
     });
   }
 
-  await prisma.storefrontOffer.update({
+  await prisma.storefrontOffer.updateMany({
     where: {
       id: offerId,
+      storefrontId: offer.storefrontId,
     },
     data: {
-      quantity: offer.quantity - quantity,
+      quantity: offer.quantity - payload.quantity,
     },
   });
 
   await prisma.inventoryLedgerEntry.create({
     data: {
-      campaignId: offer.storefront.campaignId,
-      characterId,
+      campaignId: campaign.id,
+      characterId: payload.characterId,
       lootItemId,
-      scope,
+      scope: payload.scope,
       entryType: LedgerEntryType.PURCHASE,
-      quantity,
-      goldDelta: -(offer.priceGold * quantity),
-      note: note.trim(),
+      quantity: payload.quantity,
+      goldDelta: -(offer.priceGold * payload.quantity),
+      note: payload.note.trim(),
     },
   });
 
-  redirectToCampaign(campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function createMailThreadAction(formData: FormData) {
   await requireDmSession();
 
-  const campaignId = z.string().min(1).parse(formData.get("campaignId"));
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
-  const subject = z.string().min(3).parse(formData.get("subject"));
-  const senderName = z.string().min(2).parse(formData.get("senderName"));
-  const recipientName = z.string().min(2).parse(formData.get("recipientName"));
-  const body = z.string().min(4).parse(formData.get("body"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+    campaignId: String(formData.get("campaignId") ?? "").trim() || null,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      subject: z.string().min(3),
+      senderName: z.string().min(2),
+      recipientName: z.string().min(2),
+      body: z.string().min(4),
+    }),
+    {
+      subject: formData.get("subject"),
+      senderName: formData.get("senderName"),
+      recipientName: formData.get("recipientName"),
+      body: formData.get("body"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-mail-state",
+    },
+  );
 
   await prisma.mailThread.create({
     data: {
-      campaignId,
-      subject: subject.trim(),
-      senderName: senderName.trim(),
-      recipientName: recipientName.trim(),
+      campaignId: campaign.id,
+      subject: payload.subject.trim(),
+      senderName: payload.senderName.trim(),
+      recipientName: payload.recipientName.trim(),
       notes: readOptionalTextField(formData, "notes"),
       messages: {
         create: {
-          fromName: senderName.trim(),
-          toName: recipientName.trim(),
-          body: body.trim(),
+          fromName: payload.senderName.trim(),
+          toName: payload.recipientName.trim(),
+          body: payload.body.trim(),
           isFromDm: true,
         },
       },
     },
   });
 
-  redirectToCampaign(campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function replyMailThreadAction(formData: FormData) {
   await requireDmSession();
 
   const threadId = z.string().min(1).parse(formData.get("threadId"));
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
-  const fromName = z.string().min(2).parse(formData.get("fromName"));
-  const toName = z.string().min(2).parse(formData.get("toName"));
-  const body = z.string().min(4).parse(formData.get("body"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      fromName: z.string().min(2),
+      toName: z.string().min(2),
+      body: z.string().min(4),
+    }),
+    {
+      fromName: formData.get("fromName"),
+      toName: formData.get("toName"),
+      body: formData.get("body"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-mail-state",
+    },
+  );
+
+  const thread = await prisma.mailThread.findFirst({
+    where: {
+      id: threadId,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!thread) {
+    redirectToCampaignError(campaign.slug, "invalid-mail-state");
+  }
 
   await prisma.mailMessage.create({
     data: {
       threadId,
-      fromName: fromName.trim(),
-      toName: toName.trim(),
-      body: body.trim(),
+      fromName: payload.fromName.trim(),
+      toName: payload.toName.trim(),
+      body: payload.body.trim(),
       isFromDm: readBooleanField(formData, "isFromDm"),
     },
   });
 
-  redirectToCampaign(campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function createCraftingRecipeAction(formData: FormData) {
   await requireDmSession();
 
-  const campaignId = z.string().min(1).parse(formData.get("campaignId"));
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
-  const name = z.string().min(3).parse(formData.get("name"));
-  const outputName = z.string().min(3).parse(formData.get("outputName"));
-  const outputDescription = z.string().min(4).parse(formData.get("outputDescription"));
-  const outputRarity = z.nativeEnum(LootRarity).parse(formData.get("outputRarity"));
-  const outputKind = z.nativeEnum(LootKind).parse(formData.get("outputKind"));
-  const inputText = z.string().min(3).parse(formData.get("inputText"));
-  const goldCost = z.coerce.number().int().min(0).max(100_000).parse(formData.get("goldCost"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+    campaignId: String(formData.get("campaignId") ?? "").trim() || null,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      name: z.string().min(3),
+      outputName: z.string().min(3),
+      outputDescription: z.string().min(4),
+      outputRarity: z.nativeEnum(LootRarity),
+      outputKind: z.nativeEnum(LootKind),
+      inputText: z.string().min(3),
+      goldCost: z.coerce.number().int().min(0).max(100_000),
+    }),
+    {
+      name: formData.get("name"),
+      outputName: formData.get("outputName"),
+      outputDescription: formData.get("outputDescription"),
+      outputRarity: formData.get("outputRarity"),
+      outputKind: formData.get("outputKind"),
+      inputText: formData.get("inputText"),
+      goldCost: formData.get("goldCost"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-crafting-state",
+    },
+  );
+
+  const duplicateRecipe = await prisma.craftingRecipe.findFirst({
+    where: {
+      campaignId: campaign.id,
+      name: payload.name.trim(),
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (duplicateRecipe) {
+    redirectToCampaignError(campaign.slug, "duplicate-recipe-name");
+  }
 
   await prisma.craftingRecipe.create({
     data: {
-      campaignId,
-      name: name.trim(),
-      outputName: outputName.trim(),
-      outputDescription: outputDescription.trim(),
-      outputRarity,
-      outputKind,
-      inputText: inputText.trim(),
-      goldCost,
+      campaignId: campaign.id,
+      name: payload.name.trim(),
+      outputName: payload.outputName.trim(),
+      outputDescription: payload.outputDescription.trim(),
+      outputRarity: payload.outputRarity,
+      outputKind: payload.outputKind,
+      inputText: payload.inputText.trim(),
+      goldCost: payload.goldCost,
       timeText: readOptionalTextField(formData, "timeText"),
       notes: readOptionalTextField(formData, "notes"),
     },
   });
 
-  redirectToCampaign(campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function createCraftingJobAction(formData: FormData) {
   await requireDmSession();
 
-  const campaignId = z.string().min(1).parse(formData.get("campaignId"));
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
-  const recipeId = z.string().min(1).parse(formData.get("recipeId"));
-  const characterId = z.string().min(1).parse(formData.get("characterId"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+    campaignId: String(formData.get("campaignId") ?? "").trim() || null,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      recipeId: z.string().min(1),
+      characterId: z.string().min(1),
+    }),
+    {
+      recipeId: formData.get("recipeId"),
+      characterId: formData.get("characterId"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-crafting-state",
+    },
+  );
+
+  const recipe = await prisma.craftingRecipe.findFirst({
+    where: {
+      id: payload.recipeId,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!recipe) {
+    redirectToCampaignError(campaign.slug, "invalid-crafting-state");
+  }
+
+  const character = await prisma.character.findFirst({
+    where: {
+      id: payload.characterId,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (!character) {
+    redirectToCampaignError(campaign.slug, "invalid-crafting-state");
+  }
 
   await prisma.craftingJob.create({
     data: {
-      campaignId,
-      recipeId,
-      characterId,
+      campaignId: campaign.id,
+      recipeId: payload.recipeId,
+      characterId: payload.characterId,
       status: CraftingJobStatus.IN_PROGRESS,
       notes: readOptionalTextField(formData, "notes"),
     },
   });
 
-  redirectToCampaign(campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function completeCraftingJobAction(formData: FormData) {
   await requireDmSession();
 
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const id = z.string().min(1).parse(formData.get("id"));
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
-  const scope = z.nativeEnum(HoldingScope).parse(formData.get("scope"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      scope: z.nativeEnum(HoldingScope),
+    }),
+    {
+      scope: formData.get("scope"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-crafting-state",
+    },
+  );
 
-  const job = await prisma.craftingJob.findUnique({
+  const job = await prisma.craftingJob.findFirst({
     where: {
       id,
+      campaignId: campaign.id,
     },
     include: {
       recipe: true,
@@ -866,7 +1602,7 @@ export async function completeCraftingJobAction(formData: FormData) {
   });
 
   if (!job || !job.recipe || !job.character) {
-    redirectToCampaign(campaignSlug);
+    redirectToCampaignError(campaign.slug, "invalid-crafting-state");
   }
 
   let lootItemId = job.lootItemId;
@@ -874,7 +1610,7 @@ export async function completeCraftingJobAction(formData: FormData) {
   if (!lootItemId) {
     const lootItem = await prisma.lootItem.create({
       data: {
-        campaignId: job.campaignId,
+        campaignId: campaign.id,
         name: job.recipe.outputName,
         rarity: job.recipe.outputRarity,
         kind: job.recipe.outputKind,
@@ -885,9 +1621,10 @@ export async function completeCraftingJobAction(formData: FormData) {
 
     lootItemId = lootItem.id;
 
-    await prisma.craftingJob.update({
+    await prisma.craftingJob.updateMany({
       where: {
         id: job.id,
+        campaignId: campaign.id,
       },
       data: {
         lootItemId,
@@ -896,9 +1633,10 @@ export async function completeCraftingJobAction(formData: FormData) {
   }
 
   if (job.status !== CraftingJobStatus.COMPLETE) {
-    await prisma.craftingJob.update({
+    await prisma.craftingJob.updateMany({
       where: {
         id: job.id,
+        campaignId: campaign.id,
       },
       data: {
         status: CraftingJobStatus.COMPLETE,
@@ -907,10 +1645,10 @@ export async function completeCraftingJobAction(formData: FormData) {
 
     await prisma.inventoryLedgerEntry.create({
       data: {
-        campaignId: job.campaignId,
+        campaignId: campaign.id,
         characterId: job.character.id,
         lootItemId,
-        scope,
+        scope: payload.scope,
         entryType: LedgerEntryType.CRAFTING_OUTPUT,
         quantity: 1,
         goldDelta: -job.recipe.goldCost,
@@ -919,39 +1657,43 @@ export async function completeCraftingJobAction(formData: FormData) {
     });
   }
 
-  redirectToCampaign(campaignSlug);
+  redirectToCampaign(campaign.slug);
 }
 
 export async function syncCompendiumAction(formData: FormData) {
   await requireDmSession();
 
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
-  const kind = z.enum(["monsters", "magic-items"]).parse(formData.get("kind"));
-  const source = z.enum(["OPEN5E", "DND5E"]).parse(formData.get("source"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      kind: z.enum(["monsters", "magic-items"]),
+      source: z.enum(["OPEN5E", "DND5E"]),
+    }),
+    {
+      kind: formData.get("kind"),
+      source: formData.get("source"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-campaign-state",
+    },
+  );
   const budget = clampImportBudget({
     pageSize: readOptionalNumberField(formData, "pageSize") ?? undefined,
     pageLimit: readOptionalNumberField(formData, "pageLimit") ?? undefined,
   });
 
   const result = await importCompendiumBatch({
-    source,
-    kind,
+    source: payload.source,
+    kind: payload.kind,
     budget,
   });
-  const campaign = await prisma.campaign.findFirst({
-    where: {
-      slug: campaignSlug,
-    },
-    select: {
-      id: true,
-    },
-  });
 
-  if (!campaign) {
-    redirectToCampaign(campaignSlug);
-  }
-
-  if (kind === "monsters") {
+  if (payload.kind === "monsters") {
     for (const monster of result.monsters) {
       await prisma.monsterCompendiumEntry.upsert({
         where: {
@@ -1009,5 +1751,5 @@ export async function syncCompendiumAction(formData: FormData) {
   }
 
   revalidatePath("/dm");
-  redirect(`/dm?campaign=${campaignSlug}&sync=${kind}&source=${source}`);
+  redirect(`/dm?campaign=${campaign.slug}&sync=${payload.kind}&source=${payload.source}`);
 }
