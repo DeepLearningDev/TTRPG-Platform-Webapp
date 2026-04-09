@@ -1,11 +1,16 @@
 import {
+  CraftingJobStatus,
+  MailThreadStatus,
   EncounterDifficulty,
   HoldingScope,
   LootKind,
   LootRarity,
+  QuestStatus,
+  StorefrontStatus,
 } from "@prisma/client";
 import { Compass, Coins, Package2, ScrollText, Sparkles } from "lucide-react";
 import Link from "next/link";
+import { requireDmSession } from "@/lib/dm-session";
 import { getDashboardData } from "@/lib/campaign-vault";
 import {
   formatCopperAsGold,
@@ -15,20 +20,41 @@ import {
 } from "@/lib/format";
 import {
   archiveNpcAction,
+  archiveCampaignAction,
   awardLootAction,
+  completeCraftingJobAction,
+  completeQuestAction,
+  createCampaignAction,
+  createCharacterAction,
   createEncounterAction,
+  createCraftingJobAction,
+  createCraftingRecipeAction,
+  createMailThreadAction,
   createNpcAction,
+  createQuestAction,
+  createStorefrontAction,
+  createStorefrontOfferAction,
+  recordStorefrontSaleAction,
+  logoutDmAction,
+  replyMailThreadAction,
+  syncCompendiumAction,
+  updateCharacterAction,
   updateNpcAction,
+  updateQuestAction,
+  updateStorefrontAction,
 } from "./actions";
 
 type DmPageProps = {
   searchParams: Promise<{
     campaign?: string;
     monster?: string;
+    sync?: string;
+    source?: string;
   }>;
 };
 
 export default async function DmPage({ searchParams }: DmPageProps) {
+  const session = await requireDmSession();
   const params = await searchParams;
   const data = await getDashboardData({
     slug: params.campaign,
@@ -43,8 +69,29 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     );
   }
 
-  const { campaigns, campaign, activeNpcs, companions, filteredMonsters, partySummaries } =
-    data;
+  const {
+    campaigns,
+    campaign,
+    activeNpcs,
+    companions,
+    filteredMonsters,
+    partySummaries,
+    quests,
+    storefronts,
+    mailThreads,
+    craftingRecipes,
+    craftingJobs,
+  } = data;
+  const openQuests = quests.filter((quest) => quest.status !== QuestStatus.COMPLETE);
+  const activeStorefronts = storefronts.filter(
+    (storefront) => storefront.status === StorefrontStatus.ACTIVE,
+  );
+  const openMailThreads = mailThreads.filter(
+    (thread) => thread.status === MailThreadStatus.ACTIVE,
+  );
+  const activeCraftingJobs = craftingJobs.filter(
+    (job) => job.status !== CraftingJobStatus.COMPLETE,
+  );
 
   return (
     <main className="app-shell">
@@ -54,12 +101,18 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           DM Workspace
         </div>
         <div className="nav-links">
+          <span className="nav-link active">Signed in as {session.username}</span>
           <Link className="nav-link" href="/">
             Overview
           </Link>
           <Link className="nav-link" href="/bank">
             Player bank
           </Link>
+          <form action={logoutDmAction}>
+            <button className="pill-button" type="submit">
+              Log out
+            </button>
+          </form>
         </div>
       </header>
 
@@ -70,6 +123,11 @@ export default async function DmPage({ searchParams }: DmPageProps) {
         </span>
         <h1>{campaign.name}</h1>
         <p>{campaign.summary}</p>
+        {params.sync ? (
+          <p className="helper-text">
+            Synced {formatEnumLabel(params.sync)} from {formatEnumLabel(params.source ?? "")}.
+          </p>
+        ) : null}
         <div className="pill-row">
           {campaigns.map((option) => (
             <Link
@@ -99,6 +157,10 @@ export default async function DmPage({ searchParams }: DmPageProps) {
         <article className="metric-card">
           <span className="metric-label">Encounter drafts</span>
           <div className="metric-value">{campaign.encounters.length}</div>
+        </article>
+        <article className="metric-card">
+          <span className="metric-label">Open quests</span>
+          <div className="metric-value">{openQuests.length}</div>
         </article>
       </section>
 
@@ -516,6 +578,39 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             </div>
           </div>
 
+          <form action={syncCompendiumAction} className="stack-form">
+            <input type="hidden" name="campaignSlug" value={campaign.slug} />
+            <div className="subgrid">
+              <label className="field-label">
+                Source
+                <select defaultValue="OPEN5E" name="source">
+                  <option value="OPEN5E">Open5e</option>
+                  <option value="DND5E">D&D 5e SRD</option>
+                </select>
+              </label>
+              <label className="field-label">
+                Kind
+                <select defaultValue="monsters" name="kind">
+                  <option value="monsters">Monsters</option>
+                  <option value="magic-items">Magic items</option>
+                </select>
+              </label>
+              <label className="field-label">
+                Page size
+                <input defaultValue="10" min="1" max="10" name="pageSize" type="number" />
+              </label>
+              <label className="field-label">
+                Pages
+                <input defaultValue="1" min="1" max="2" name="pageLimit" type="number" />
+              </label>
+            </div>
+            <div className="button-row">
+              <button className="button-secondary" type="submit">
+                Sync catalog
+              </button>
+            </div>
+          </form>
+
           <form className="stack-form" method="get">
             <input name="campaign" type="hidden" value={campaign.slug} />
             <label className="field-label">
@@ -563,9 +658,618 @@ export default async function DmPage({ searchParams }: DmPageProps) {
         </article>
       </section>
 
+      <section className="two-column-grid">
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">Quest Board</span>
+              <h2>Contract flow and reward handoff</h2>
+            </div>
+            <span className="tag">{openQuests.length} active</span>
+          </div>
+
+          <form action={createQuestAction} className="stack-form">
+            <input type="hidden" name="campaignId" value={campaign.id} />
+            <input type="hidden" name="campaignSlug" value={campaign.slug} />
+            <div className="subgrid">
+              <label className="field-label">
+                Quest title
+                <input name="title" placeholder="Seal the lower floodgate" required />
+              </label>
+              <label className="field-label">
+                Reward gold
+                <input defaultValue="0" min="0" name="rewardGold" type="number" />
+              </label>
+              <label className="field-label">
+                Recipient
+                <select name="assigneeCharacterId" defaultValue="">
+                  <option value="">No assignee yet</option>
+                  {partySummaries.map((character) => (
+                    <option key={character.id} value={character.id}>
+                      {character.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label className="field-label">
+              Objective
+              <textarea name="objective" placeholder="What must the party actually do?" required />
+            </label>
+            <label className="field-label">
+              Reward text
+              <textarea
+                name="rewardText"
+                placeholder="Optional item, favor, or story reward note."
+              />
+            </label>
+            <label className="field-label">
+              Notes
+              <textarea name="notes" placeholder="Threads, deadlines, and hidden conditions." />
+            </label>
+            <div className="button-row">
+              <button className="button" type="submit">
+                Add quest
+              </button>
+            </div>
+          </form>
+
+          <div className="card-stack">
+            {quests.map((quest) => (
+              <div className="item-card" key={quest.id}>
+                <div className="card-header">
+                  <div>
+                    <div className="value-line">{quest.title}</div>
+                    <div className="muted">
+                      {formatEnumLabel(quest.status)} · reward {formatCopperAsGold(quest.rewardGold)}
+                    </div>
+                  </div>
+                  <span className="tag">{quest.assignee?.name ?? "Unassigned"}</span>
+                </div>
+                <p>{quest.objective}</p>
+                {quest.rewardText ? <p className="muted">{quest.rewardText}</p> : null}
+                <form action={updateQuestAction} className="stack-form">
+                  <input type="hidden" name="id" value={quest.id} />
+                  <input type="hidden" name="campaignId" value={campaign.id} />
+                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                  <div className="subgrid">
+                    <label className="field-label">
+                      Title
+                      <input defaultValue={quest.title} name="title" required />
+                    </label>
+                    <label className="field-label">
+                      Status
+                      <select defaultValue={quest.status} name="status">
+                        {Object.values(QuestStatus).map((status) => (
+                          <option key={status} value={status}>
+                            {formatEnumLabel(status)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field-label">
+                      Reward gold
+                      <input
+                        defaultValue={quest.rewardGold}
+                        min="0"
+                        name="rewardGold"
+                        type="number"
+                      />
+                    </label>
+                    <label className="field-label">
+                      Recipient
+                      <select defaultValue={quest.assigneeCharacterId ?? ""} name="assigneeCharacterId">
+                        <option value="">No assignee yet</option>
+                        {partySummaries.map((character) => (
+                          <option key={character.id} value={character.id}>
+                            {character.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <label className="field-label">
+                    Objective
+                    <textarea defaultValue={quest.objective} name="objective" required />
+                  </label>
+                  <label className="field-label">
+                    Reward text
+                    <textarea defaultValue={quest.rewardText ?? ""} name="rewardText" />
+                  </label>
+                  <label className="field-label">
+                    Notes
+                    <textarea defaultValue={quest.notes ?? ""} name="notes" />
+                  </label>
+                  <div className="button-row">
+                    <button className="button-secondary" type="submit">
+                      Update quest
+                    </button>
+                  </div>
+                </form>
+                <form action={completeQuestAction}>
+                  <input type="hidden" name="id" value={quest.id} />
+                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                  <button className="button-secondary" type="submit">
+                    Mark complete and award
+                  </button>
+                </form>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">Storefronts</span>
+              <h2>DM shop control and sale logging</h2>
+            </div>
+            <span className="tag">{activeStorefronts.length} active</span>
+          </div>
+
+          <form action={createStorefrontAction} className="stack-form">
+            <input type="hidden" name="campaignId" value={campaign.id} />
+            <input type="hidden" name="campaignSlug" value={campaign.slug} />
+            <div className="subgrid">
+              <label className="field-label">
+                Store name
+                <input name="name" placeholder="Rook's Reliquary" required />
+              </label>
+              <label className="field-label">
+                Keeper
+                <input name="keeperName" placeholder="Rook the vendor" />
+              </label>
+            </div>
+            <label className="field-label">
+              Description
+              <textarea name="description" placeholder="What this shop sells and how it feels." required />
+            </label>
+            <label className="field-label">
+              Notes
+              <textarea name="notes" placeholder="Rotating stock, rumors, or special rules." />
+            </label>
+            <div className="button-row">
+              <button className="button" type="submit">
+                Add storefront
+              </button>
+            </div>
+          </form>
+
+          <div className="card-stack">
+            {storefronts.map((storefront) => (
+              <div className="item-card" key={storefront.id}>
+                <div className="card-header">
+                  <div>
+                    <div className="value-line">{storefront.name}</div>
+                    <div className="muted">{storefront.keeperName ?? "No keeper listed"}</div>
+                  </div>
+                  <span className="tag">{formatEnumLabel(storefront.status)}</span>
+                </div>
+                <p>{storefront.description}</p>
+                {storefront.notes ? <p className="muted">{storefront.notes}</p> : null}
+
+                <form action={updateStorefrontAction} className="stack-form">
+                  <input type="hidden" name="id" value={storefront.id} />
+                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                  <div className="subgrid">
+                    <label className="field-label">
+                      Name
+                      <input defaultValue={storefront.name} name="name" required />
+                    </label>
+                    <label className="field-label">
+                      Keeper
+                      <input defaultValue={storefront.keeperName ?? ""} name="keeperName" />
+                    </label>
+                    <label className="field-label">
+                      Status
+                      <select defaultValue={storefront.status} name="status">
+                        {Object.values(StorefrontStatus).map((status) => (
+                          <option key={status} value={status}>
+                            {formatEnumLabel(status)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <label className="field-label">
+                    Description
+                    <textarea defaultValue={storefront.description} name="description" required />
+                  </label>
+                  <label className="field-label">
+                    Notes
+                    <textarea defaultValue={storefront.notes ?? ""} name="notes" />
+                  </label>
+                  <div className="button-row">
+                    <button className="button-secondary" type="submit">
+                      Update storefront
+                    </button>
+                  </div>
+                </form>
+
+                <div className="list-card">
+                  {storefront.offers.map((offer) => (
+                    <div className="list-item" key={offer.id}>
+                      <div className="card-header">
+                        <div>
+                          <strong>{offer.itemName}</strong>
+                          <div className="muted">
+                            {formatEnumLabel(offer.rarity)} · {formatEnumLabel(offer.kind)} ·{" "}
+                            {formatCopperAsGold(offer.priceGold)}
+                          </div>
+                        </div>
+                        <span className="tag">Stock {offer.quantity}</span>
+                      </div>
+                      <p>{offer.itemDescription}</p>
+                      {offer.notes ? <p className="muted">{offer.notes}</p> : null}
+                      <form action={recordStorefrontSaleAction} className="stack-form">
+                        <input type="hidden" name="offerId" value={offer.id} />
+                        <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                        <div className="subgrid">
+                          <label className="field-label">
+                            Buyer
+                            <select name="characterId" defaultValue={partySummaries[0]?.id}>
+                              {partySummaries.map((character) => (
+                                <option key={character.id} value={character.id}>
+                                  {character.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="field-label">
+                            Scope
+                            <select defaultValue={HoldingScope.BANK} name="scope">
+                              <option value={HoldingScope.BANK}>Bank</option>
+                              <option value={HoldingScope.INVENTORY}>Inventory</option>
+                            </select>
+                          </label>
+                          <label className="field-label">
+                            Quantity
+                            <input defaultValue="1" min="1" name="quantity" type="number" />
+                          </label>
+                        </div>
+                        <label className="field-label">
+                          Sale note
+                          <textarea
+                            defaultValue={`Purchased from ${storefront.name}.`}
+                            name="note"
+                            required
+                          />
+                        </label>
+                        <div className="button-row">
+                          <button className="button-secondary" type="submit">
+                            Record sale
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  ))}
+                </div>
+
+                <form action={createStorefrontOfferAction} className="stack-form">
+                  <input type="hidden" name="storefrontId" value={storefront.id} />
+                  <input type="hidden" name="campaignId" value={campaign.id} />
+                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                  <div className="subgrid">
+                    <label className="field-label">
+                      Item name
+                      <input name="itemName" placeholder="Potion of Clean Passage" required />
+                    </label>
+                    <label className="field-label">
+                      Price gold
+                      <input defaultValue="25" min="0" name="priceGold" type="number" />
+                    </label>
+                    <label className="field-label">
+                      Rarity
+                      <select name="rarity" defaultValue={LootRarity.UNCOMMON}>
+                        {Object.values(LootRarity).map((rarity) => (
+                          <option key={rarity} value={rarity}>
+                            {formatEnumLabel(rarity)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field-label">
+                      Kind
+                      <select name="kind" defaultValue={LootKind.WONDROUS}>
+                        {Object.values(LootKind).map((kind) => (
+                          <option key={kind} value={kind}>
+                            {formatEnumLabel(kind)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="subgrid">
+                    <label className="field-label">
+                      Existing loot item
+                      <select name="lootItemId" defaultValue="">
+                        <option value="">Create a new catalog item</option>
+                        {campaign.lootItems.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field-label">
+                      Stock
+                      <input defaultValue="1" min="1" name="quantity" type="number" />
+                    </label>
+                  </div>
+                  <label className="field-label">
+                    Description
+                    <textarea name="itemDescription" placeholder="What the buyer gets." required />
+                  </label>
+                  <label className="field-label">
+                    Notes
+                    <textarea name="notes" placeholder="Special conditions, bargaining hooks, etc." />
+                  </label>
+                  <div className="button-row">
+                    <button className="button" type="submit">
+                      Add offer
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ))}
+          </div>
+        </article>
+      </section>
+
+      <section className="two-column-grid">
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">Mail</span>
+              <h2>In-world threads and DM replies</h2>
+            </div>
+            <span className="tag">{openMailThreads.length} active</span>
+          </div>
+
+          <form action={createMailThreadAction} className="stack-form">
+            <input type="hidden" name="campaignId" value={campaign.id} />
+            <input type="hidden" name="campaignSlug" value={campaign.slug} />
+            <div className="subgrid">
+              <label className="field-label">
+                Subject
+                <input name="subject" placeholder="A sealed note from the guild" required />
+              </label>
+              <label className="field-label">
+                From
+                <input name="senderName" placeholder="Guild courier" required />
+              </label>
+              <label className="field-label">
+                To
+                <input name="recipientName" placeholder="Miri Vale" required />
+              </label>
+            </div>
+            <label className="field-label">
+              Opening message
+              <textarea name="body" placeholder="The first message in the thread." required />
+            </label>
+            <label className="field-label">
+              Notes
+              <textarea name="notes" placeholder="Tone, secrecy, or quest hooks." />
+            </label>
+            <div className="button-row">
+              <button className="button" type="submit">
+                Start thread
+              </button>
+            </div>
+          </form>
+
+          <div className="card-stack">
+            {mailThreads.map((thread) => (
+              <div className="item-card" key={thread.id}>
+                <div className="card-header">
+                  <div>
+                    <div className="value-line">{thread.subject}</div>
+                    <div className="muted">
+                      {thread.senderName} to {thread.recipientName}
+                    </div>
+                  </div>
+                  <span className="tag">{formatEnumLabel(thread.status)}</span>
+                </div>
+                {thread.notes ? <p className="muted">{thread.notes}</p> : null}
+                <div className="list-card">
+                  {thread.messages.map((message) => (
+                    <div className="list-item" key={message.id}>
+                      <div className="card-header">
+                        <strong>
+                          {message.fromName} to {message.toName}
+                        </strong>
+                        <span className="tag">{message.isFromDm ? "DM" : "Player"}</span>
+                      </div>
+                      <p>{message.body}</p>
+                    </div>
+                  ))}
+                </div>
+                <form action={replyMailThreadAction} className="stack-form">
+                  <input type="hidden" name="threadId" value={thread.id} />
+                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                  <div className="subgrid">
+                    <label className="field-label">
+                      From
+                      <input defaultValue="DM" name="fromName" required />
+                    </label>
+                    <label className="field-label">
+                      To
+                      <input defaultValue={thread.recipientName} name="toName" required />
+                    </label>
+                  </div>
+                  <label className="field-label">
+                    Reply
+                    <textarea name="body" placeholder="The next message in the thread." required />
+                  </label>
+                  <div className="button-row">
+                    <button className="button-secondary" type="submit">
+                      Add reply
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">Crafting</span>
+              <h2>Recipes and active work orders</h2>
+            </div>
+            <span className="tag">{activeCraftingJobs.length} in progress</span>
+          </div>
+
+          <form action={createCraftingRecipeAction} className="stack-form">
+            <input type="hidden" name="campaignId" value={campaign.id} />
+            <input type="hidden" name="campaignSlug" value={campaign.slug} />
+            <div className="subgrid">
+              <label className="field-label">
+                Recipe name
+                <input name="name" placeholder="Runed satchel" required />
+              </label>
+              <label className="field-label">
+                Output name
+                <input name="outputName" placeholder="Runed Satchel" required />
+              </label>
+              <label className="field-label">
+                Gold cost
+                <input defaultValue="0" min="0" name="goldCost" type="number" />
+              </label>
+              <label className="field-label">
+                Time
+                <input name="timeText" placeholder="2 days" />
+              </label>
+            </div>
+            <div className="subgrid">
+              <label className="field-label">
+                Output rarity
+                <select name="outputRarity" defaultValue={LootRarity.UNCOMMON}>
+                  {Object.values(LootRarity).map((rarity) => (
+                    <option key={rarity} value={rarity}>
+                      {formatEnumLabel(rarity)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field-label">
+                Output kind
+                <select name="outputKind" defaultValue={LootKind.WONDROUS}>
+                  {Object.values(LootKind).map((kind) => (
+                    <option key={kind} value={kind}>
+                      {formatEnumLabel(kind)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label className="field-label">
+              Output description
+              <textarea name="outputDescription" placeholder="What the finished item does." required />
+            </label>
+            <label className="field-label">
+              Inputs
+              <textarea name="inputText" placeholder="Required materials or craft steps." required />
+            </label>
+            <label className="field-label">
+              Notes
+              <textarea name="notes" placeholder="Special crafting rules or hooks." />
+            </label>
+            <div className="button-row">
+              <button className="button" type="submit">
+                Add recipe
+              </button>
+            </div>
+          </form>
+
+          <div className="card-stack">
+            {craftingRecipes.map((recipe) => (
+              <div className="item-card" key={recipe.id}>
+                <div className="card-header">
+                  <div>
+                    <div className="value-line">{recipe.name}</div>
+                    <div className="muted">
+                      Outputs {recipe.outputName} · {formatCopperAsGold(recipe.goldCost)}
+                    </div>
+                  </div>
+                  <span className="tag">{formatEnumLabel(recipe.status)}</span>
+                </div>
+                <p>{recipe.inputText}</p>
+                <p className="muted">{recipe.outputDescription}</p>
+                <form action={createCraftingJobAction} className="stack-form">
+                  <input type="hidden" name="campaignId" value={campaign.id} />
+                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                  <input type="hidden" name="recipeId" value={recipe.id} />
+                  <div className="subgrid">
+                    <label className="field-label">
+                      Crafter
+                      <select name="characterId" defaultValue={partySummaries[0]?.id}>
+                        {partySummaries.map((character) => (
+                          <option key={character.id} value={character.id}>
+                            {character.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field-label">
+                      Notes
+                      <input name="notes" placeholder="Pending materials from the next session." />
+                    </label>
+                  </div>
+                  <div className="button-row">
+                    <button className="button-secondary" type="submit">
+                      Start job
+                    </button>
+                  </div>
+                </form>
+
+                <div className="list-card">
+                  {recipe.jobs.map((job) => (
+                    <div className="list-item" key={job.id}>
+                      <div className="card-header">
+                        <strong>{job.character?.name ?? "Unknown crafter"}</strong>
+                        <span className="tag">{formatEnumLabel(job.status)}</span>
+                      </div>
+                      <p>{job.notes ?? "No notes yet."}</p>
+                      <form action={completeCraftingJobAction} className="stack-form">
+                        <input type="hidden" name="id" value={job.id} />
+                        <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                        <div className="subgrid">
+                          <label className="field-label">
+                            Destination
+                            <select defaultValue={HoldingScope.BANK} name="scope">
+                              <option value={HoldingScope.BANK}>Bank</option>
+                              <option value={HoldingScope.INVENTORY}>Inventory</option>
+                            </select>
+                          </label>
+                          <label className="field-label">
+                            Reward note
+                            <input
+                              defaultValue={`Crafted ${recipe.outputName}`}
+                              name="note"
+                              readOnly
+                            />
+                          </label>
+                        </div>
+                        <div className="button-row">
+                          <button className="button-secondary" type="submit">
+                            Complete job
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </article>
+      </section>
+
       <p className="footer-note">
-        Phase-2 systems already planned on top of this foundation: quest board,
-        storefronts, mail, crafting, advanced loot generation, casino, and pet care.
+        Phase-2 systems now have a baseline: quest board, storefronts, mail, crafting,
+        compendium sync, advanced loot generation, casino, and pet care.
       </p>
     </main>
   );

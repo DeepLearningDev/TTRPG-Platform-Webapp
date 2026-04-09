@@ -8,6 +8,21 @@ type SessionPayload = {
   characterId: string;
 };
 
+function isSessionPayload(value: unknown): value is SessionPayload {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return (
+    typeof candidate.campaignId === "string" &&
+    candidate.campaignId.length > 0 &&
+    typeof candidate.characterId === "string" &&
+    candidate.characterId.length > 0
+  );
+}
+
 function getSecret() {
   return process.env.PLAYER_SESSION_SECRET ?? "campaign-vault-local-secret";
 }
@@ -53,7 +68,8 @@ export function decodePlayerSession(rawValue: string | undefined): SessionPayloa
   }
 
   try {
-    return JSON.parse(fromBase64Url(encoded)) as SessionPayload;
+    const parsed = JSON.parse(fromBase64Url(encoded)) as unknown;
+    return isSessionPayload(parsed) ? parsed : null;
   } catch {
     return null;
   }

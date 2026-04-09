@@ -95,6 +95,12 @@ export default async function BankPage({ searchParams }: BankPageProps) {
               No matching campaign, character, and PIN combination was found.
             </p>
           ) : null}
+          {params.error === "locked" ? (
+            <p className="error-banner">
+              This bank login is temporarily locked after repeated failed attempts.
+              Wait about 15 minutes and try again.
+            </p>
+          ) : null}
         </article>
 
         <article className="panel">

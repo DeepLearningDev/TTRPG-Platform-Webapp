@@ -44,6 +44,67 @@ const dashboardInclude = {
       updatedAt: "desc" as const,
     },
   },
+  quests: {
+    include: {
+      assignee: true,
+    },
+    orderBy: {
+      updatedAt: "desc" as const,
+    },
+  },
+  storefronts: {
+    include: {
+      offers: {
+        include: {
+          lootItem: true,
+        },
+        orderBy: {
+          updatedAt: "desc" as const,
+        },
+      },
+    },
+    orderBy: {
+      updatedAt: "desc" as const,
+    },
+  },
+  mailThreads: {
+    include: {
+      messages: {
+        orderBy: {
+          createdAt: "asc" as const,
+        },
+      },
+    },
+    orderBy: {
+      updatedAt: "desc" as const,
+    },
+  },
+  craftingRecipes: {
+    include: {
+      jobs: {
+        include: {
+          character: true,
+          lootItem: true,
+        },
+        orderBy: {
+          updatedAt: "desc" as const,
+        },
+      },
+    },
+    orderBy: {
+      updatedAt: "desc" as const,
+    },
+  },
+  craftingJobs: {
+    include: {
+      recipe: true,
+      character: true,
+      lootItem: true,
+    },
+    orderBy: {
+      updatedAt: "desc" as const,
+    },
+  },
   ledgerEntries: {
     include: {
       character: true,
@@ -128,6 +189,37 @@ export async function getDashboardData(options?: {
     companions: campaign.npcs.filter((npc) => npc.type === NpcType.COMPANION),
     filteredMonsters,
     partySummaries,
+    quests: campaign.quests,
+    storefronts: campaign.storefronts,
+    mailThreads: campaign.mailThreads,
+    craftingRecipes: campaign.craftingRecipes,
+    craftingJobs: campaign.craftingJobs,
+  };
+}
+
+export async function getCompendiumSummary(campaignId: string) {
+  const [monsterCount, magicItemCount] = await Promise.all([
+    prisma.monsterCompendiumEntry.count({
+      where: {
+        campaignId,
+        compendiumSource: {
+          not: null,
+        },
+      },
+    }),
+    prisma.lootItem.count({
+      where: {
+        campaignId,
+        compendiumSource: {
+          not: null,
+        },
+      },
+    }),
+  ]);
+
+  return {
+    monsterCount,
+    magicItemCount,
   };
 }
 
@@ -144,7 +236,75 @@ export async function getPlayerAccountBySession(input: {
       },
     },
     include: {
-      campaign: true,
+      campaign: {
+        include: {
+          quests: {
+            where: {
+              status: {
+                in: ["OPEN", "ACTIVE"],
+              },
+            },
+            include: {
+              assignee: true,
+            },
+            orderBy: {
+              updatedAt: "desc",
+            },
+          },
+          storefronts: {
+            where: {
+              status: "ACTIVE",
+            },
+            include: {
+              offers: {
+                orderBy: {
+                  updatedAt: "desc",
+                },
+                take: 8,
+              },
+            },
+            orderBy: {
+              updatedAt: "desc",
+            },
+          },
+          mailThreads: {
+            where: {
+              status: "ACTIVE",
+            },
+            include: {
+              messages: {
+                orderBy: {
+                  createdAt: "asc",
+                },
+              },
+            },
+            orderBy: {
+              updatedAt: "desc",
+            },
+            take: 10,
+          },
+          craftingJobs: {
+            where: {
+              OR: [
+                {
+                  characterId: input.characterId,
+                },
+                {
+                  characterId: null,
+                },
+              ],
+            },
+            include: {
+              recipe: true,
+              lootItem: true,
+            },
+            orderBy: {
+              updatedAt: "desc",
+            },
+            take: 10,
+          },
+        },
+      },
       ledgerEntries: {
         include: {
           lootItem: true,
@@ -164,6 +324,19 @@ export async function getPlayerAccountBySession(input: {
     ...character,
     bankSnapshot: deriveHoldings(character.ledgerEntries, HoldingScope.BANK),
     inventorySnapshot: deriveHoldings(character.ledgerEntries, HoldingScope.INVENTORY),
+    visibleMailThreads: character.campaign.mailThreads.filter((thread) => {
+      const nameKey = character.name.toLowerCase();
+      const playerKey = character.playerName.toLowerCase();
+      const recipient = thread.recipientName.toLowerCase();
+      const sender = thread.senderName.toLowerCase();
+
+      return (
+        recipient.includes("party") ||
+        recipient.includes(nameKey) ||
+        recipient.includes(playerKey) ||
+        sender.includes(nameKey)
+      );
+    }),
   };
 }
 
@@ -174,6 +347,9 @@ export async function authenticateBankAccess(input: {
   return prisma.character.findFirst({
     where: {
       campaignId: input.campaignId,
+      campaign: {
+        status: CampaignStatus.ACTIVE,
+      },
       name: {
         equals: input.characterName.trim(),
       },

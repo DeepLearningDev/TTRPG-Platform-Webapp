@@ -1,5 +1,6 @@
 import {
   CampaignStatus,
+  CompendiumSourceProvider,
   EncounterDifficulty,
   HoldingScope,
   LedgerEntryType,
@@ -15,6 +16,14 @@ const prisma = new PrismaClient();
 
 async function main() {
   await prisma.inventoryLedgerEntry.deleteMany();
+  await prisma.bankLoginAttempt.deleteMany();
+  await prisma.craftingJob.deleteMany();
+  await prisma.craftingRecipe.deleteMany();
+  await prisma.mailMessage.deleteMany();
+  await prisma.mailThread.deleteMany();
+  await prisma.storefrontOffer.deleteMany();
+  await prisma.storefront.deleteMany();
+  await prisma.quest.deleteMany();
   await prisma.encounterMonster.deleteMany();
   await prisma.encounter.deleteMany();
   await prisma.lootItem.deleteMany();
@@ -148,10 +157,14 @@ async function main() {
   const [goblin, skeleton, ogre, gelatinousCube, reefStalker] =
     await Promise.all([
       prisma.monsterCompendiumEntry.create({
-        data: {
-          name: "Goblin Ambusher",
-          challengeRating: "1/4",
-          monsterType: "Humanoid",
+      data: {
+        name: "Goblin Ambusher",
+        sourceKey: "ashes-of-highcrest:open5e:goblin-ambusher",
+        sourceUrl: "https://api.open5e.com/monsters/goblin-ambusher/",
+        sourceDocument: "5esrd",
+        compendiumSource: CompendiumSourceProvider.OPEN5E,
+        challengeRating: "1/4",
+        monsterType: "Humanoid",
           environment: "Ruins, alleyways, tunnels",
           tags: "ambush, stealth, ranged",
           specialDrops: "Scavenged charms, gutter maps",
@@ -160,10 +173,14 @@ async function main() {
         },
       }),
       prisma.monsterCompendiumEntry.create({
-        data: {
-          name: "Crypt Skeleton",
-          challengeRating: "1/4",
-          monsterType: "Undead",
+      data: {
+        name: "Crypt Skeleton",
+        sourceKey: "ashes-of-highcrest:open5e:crypt-skeleton",
+        sourceUrl: "https://api.open5e.com/monsters/crypt-skeleton/",
+        sourceDocument: "5esrd",
+        compendiumSource: CompendiumSourceProvider.OPEN5E,
+        challengeRating: "1/4",
+        monsterType: "Undead",
           environment: "Crypts, shrines, ossuaries",
           tags: "undead, attrition, shrine",
           specialDrops: "Bone ward icons, rusted reliquary keys",
@@ -172,10 +189,14 @@ async function main() {
         },
       }),
       prisma.monsterCompendiumEntry.create({
-        data: {
-          name: "Tunnel Ogre",
-          challengeRating: "2",
-          monsterType: "Giant",
+      data: {
+        name: "Tunnel Ogre",
+        sourceKey: "ashes-of-highcrest:open5e:tunnel-ogre",
+        sourceUrl: "https://api.open5e.com/monsters/tunnel-ogre/",
+        sourceDocument: "open5e",
+        compendiumSource: CompendiumSourceProvider.OPEN5E,
+        challengeRating: "2",
+        monsterType: "Giant",
           environment: "Collapsed tunnels, sewers, ruins",
           tags: "brute, cave-in, heavy hit",
           specialDrops: "Chain hooks, brute trophies",
@@ -184,10 +205,14 @@ async function main() {
         },
       }),
       prisma.monsterCompendiumEntry.create({
-        data: {
-          name: "Gelatinous Cube",
-          challengeRating: "2",
-          monsterType: "Ooze",
+      data: {
+        name: "Gelatinous Cube",
+        sourceKey: "ashes-of-highcrest:dnd5e:gelatinous-cube",
+        sourceUrl: "https://www.dnd5eapi.co/api/2014/monsters/gelatinous-cube",
+        sourceDocument: "dnd5eapi",
+        compendiumSource: CompendiumSourceProvider.DND5EAPI,
+        challengeRating: "2",
+        monsterType: "Ooze",
           environment: "Vault halls, dungeons",
           tags: "ooze, corridor, control",
           specialDrops: "Dissolved trinkets, preserved keys",
@@ -196,9 +221,9 @@ async function main() {
         },
       }),
       prisma.monsterCompendiumEntry.create({
-        data: {
-          campaignId: sunkenCrown.id,
-          name: "Reef Stalker",
+      data: {
+        campaignId: sunkenCrown.id,
+        name: "Reef Stalker",
           challengeRating: "3",
           monsterType: "Monstrosity",
           environment: "Flooded ruins, mangrove pools",
@@ -216,6 +241,10 @@ async function main() {
     prisma.lootItem.create({
       data: {
         campaignId: highcrest.id,
+        sourceKey: "ashes-of-highcrest:open5e:ward-key-ring",
+        sourceUrl: "https://api.open5e.com/magicitems/ward-key-ring/",
+        sourceDocument: "5esrd",
+        compendiumSource: CompendiumSourceProvider.OPEN5E,
         name: "Ward-Key Ring",
         rarity: LootRarity.UNCOMMON,
         kind: LootKind.WONDROUS,
@@ -228,6 +257,10 @@ async function main() {
     prisma.lootItem.create({
       data: {
         campaignId: highcrest.id,
+        sourceKey: "ashes-of-highcrest:open5e:ashen-ember-band",
+        sourceUrl: "https://api.open5e.com/magicitems/ashen-ember-band/",
+        sourceDocument: "5esrd",
+        compendiumSource: CompendiumSourceProvider.OPEN5E,
         name: "Ashen Ember Band",
         rarity: LootRarity.RARE,
         kind: LootKind.WONDROUS,
@@ -240,6 +273,10 @@ async function main() {
     prisma.lootItem.create({
       data: {
         campaignId: sunkenCrown.id,
+        sourceKey: "sunken-crown:dnd5e:flood-surveyors-map-tube",
+        sourceUrl: "https://www.dnd5eapi.co/api/2014/magic-items/map-tube",
+        sourceDocument: "dnd5eapi",
+        compendiumSource: CompendiumSourceProvider.DND5EAPI,
         name: "Flood Surveyor's Map Tube",
         rarity: LootRarity.COMMON,
         kind: LootKind.TOOL,
@@ -400,11 +437,144 @@ async function main() {
     ],
   });
 
+  const relicExchange = await prisma.storefront.create({
+    data: {
+      campaignId: highcrest.id,
+      name: "Lantern Ward Trading Post",
+      keeperName: "Rook Penn",
+      description: "A hard-edged vault shop that keeps relics under glass and prices under watch.",
+      notes: "Offers a small rotating stock for favor, coin, or story leverage.",
+    },
+  });
+
+  await prisma.storefrontOffer.createMany({
+    data: [
+      {
+        storefrontId: relicExchange.id,
+        lootItemId: wardKey.id,
+        itemName: wardKey.name,
+        itemDescription: wardKey.description,
+        rarity: wardKey.rarity,
+        kind: wardKey.kind,
+        priceGold: 110,
+        quantity: 1,
+        notes: "Clears sealed doors and old vault locks.",
+      },
+      {
+        storefrontId: relicExchange.id,
+        lootItemId: emberBand.id,
+        itemName: emberBand.name,
+        itemDescription: emberBand.description,
+        rarity: emberBand.rarity,
+        kind: emberBand.kind,
+        priceGold: 260,
+        quantity: 1,
+        notes: "Usually reserved for allies with grave-cult trouble.",
+      },
+    ],
+  });
+
+  await prisma.quest.createMany({
+    data: [
+      {
+        campaignId: highcrest.id,
+        assigneeCharacterId: miri.id,
+        title: "Seal the Lower Floodgate",
+        objective: "Reach the submerged controls and stop the seep before the crypt wards fail.",
+        rewardGold: 450,
+        rewardText: "A favor with the lantern wardens.",
+        status: "ACTIVE",
+        notes: "Use the sewers if the main approach is watched.",
+      },
+      {
+        campaignId: sunkenCrown.id,
+        assigneeCharacterId: sella.id,
+        title: "Recover the Drowned Survey",
+        objective: "Find the missing expedition maps before the rival crew sells them onward.",
+        rewardGold: 300,
+        rewardText: "Exclusive route intel for the next island leg.",
+        status: "OPEN",
+        notes: "The trail likely runs through the mangroves.",
+      },
+    ],
+  });
+
+  const highcrestThread = await prisma.mailThread.create({
+    data: {
+      campaignId: highcrest.id,
+      subject: "Sealed note from the undercroft",
+      senderName: "Marrow Venn",
+      recipientName: "Miri Vale",
+      notes: "Rumor drop and future quest hook.",
+      messages: {
+        create: [
+          {
+            fromName: "Marrow Venn",
+            toName: "Miri Vale",
+            body: "The floodgate keys are in the lamp house. Do not let the cult see you coming.",
+            isFromDm: true,
+          },
+          {
+            fromName: "DM",
+            toName: "Miri Vale",
+            body: "A courier can meet you after dusk if you want the route marked on your map.",
+            isFromDm: true,
+          },
+        ],
+      },
+    },
+  });
+
+  await prisma.mailThread.create({
+    data: {
+      campaignId: sunkenCrown.id,
+      subject: "Field report from the expedition",
+      senderName: "Captain Ori Pell",
+      recipientName: "Sella Drift",
+      notes: "Player-facing correspondence for the campaign hub.",
+      messages: {
+        create: {
+          fromName: "Captain Ori Pell",
+          toName: "Sella Drift",
+          body: "The next ruins sit under a flooded canopy. Bring dry rope and a sharp eye.",
+          isFromDm: false,
+        },
+      },
+    },
+  });
+
+  const satchelRecipe = await prisma.craftingRecipe.create({
+    data: {
+      campaignId: highcrest.id,
+      name: "Runed Satchel",
+      outputName: "Runed Satchel",
+      outputDescription: "A sturdy leather satchel stitched with warding thread.",
+      outputRarity: LootRarity.UNCOMMON,
+      outputKind: LootKind.WONDROUS,
+      inputText: "Leather, silver thread, ward chalk, and a short prayer.",
+      goldCost: 25,
+      timeText: "2 days",
+      notes: "Useful for relic transport and quiet spell storage.",
+    },
+  });
+
+  const satchelJob = await prisma.craftingJob.create({
+    data: {
+      campaignId: highcrest.id,
+      recipeId: satchelRecipe.id,
+      characterId: miri.id,
+      status: "IN_PROGRESS",
+      notes: "Waiting on the silver thread shipment.",
+    },
+  });
+
   console.log("Seeded Campaign Vault demo data");
   console.log({
     highcrest: highcrest.slug,
     sunkenCrown: sunkenCrown.slug,
     encounter: cryptWatch.title,
+    mailThread: highcrestThread.subject,
+    craftingJob: satchelJob.id,
   });
 }
 

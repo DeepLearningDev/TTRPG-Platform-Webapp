@@ -37,6 +37,8 @@ enum LedgerEntryType {
   TRANSFER
   PURCHASE
   QUEST_REWARD
+  CRAFTING_INPUT
+  CRAFTING_OUTPUT
 }
 
 enum LootRarity {
@@ -62,22 +64,62 @@ enum MonsterSourceType {
   CUSTOM
 }
 
+enum CompendiumSourceProvider {
+  OPEN5E
+  DND5EAPI
+}
+
+enum QuestStatus {
+  OPEN
+  ACTIVE
+  COMPLETE
+  ARCHIVED
+}
+
+enum StorefrontStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum MailThreadStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum CraftingRecipeStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum CraftingJobStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETE
+  ARCHIVED
+}
+
 model Campaign {
-  id            String                  @id @default(cuid())
-  slug          String                  @unique
-  name          String
-  status        CampaignStatus          @default(ACTIVE)
-  setting       String
-  summary       String
-  sessionNight  String?
-  createdAt     DateTime                @default(now())
-  updatedAt     DateTime                @updatedAt
-  characters    Character[]
-  npcs          Npc[]
-  monsters      MonsterCompendiumEntry[]
-  encounters    Encounter[]
-  lootItems     LootItem[]
-  ledgerEntries InventoryLedgerEntry[]
+  id                String                  @id @default(cuid())
+  slug              String                  @unique
+  name              String
+  status            CampaignStatus          @default(ACTIVE)
+  setting           String
+  summary           String
+  sessionNight      String?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  characters        Character[]
+  npcs              Npc[]
+  monsters          MonsterCompendiumEntry[]
+  encounters        Encounter[]
+  lootItems         LootItem[]
+  quests            Quest[]
+  storefronts       Storefront[]
+  mailThreads       MailThread[]
+  craftingRecipes   CraftingRecipe[]
+  craftingJobs      CraftingJob[]
+  bankLoginAttempts BankLoginAttempt[]
+  ledgerEntries     InventoryLedgerEntry[]
 }
 
 model Character {
@@ -92,19 +134,37 @@ model Character {
   updatedAt     DateTime               @updatedAt
   campaign      Campaign               @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   bankAccess    BankAccess?
+  quests        Quest[]                @relation("QuestAssignee")
+  craftingJobs  CraftingJob[]          @relation("CraftingJobCharacter")
   ledgerEntries InventoryLedgerEntry[]
 
   @@unique([campaignId, name])
 }
 
 model BankAccess {
-  id          String    @id @default(cuid())
-  characterId String    @unique
-  pinHash     String
-  lastLoginAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  id               String    @id @default(cuid())
+  characterId      String    @unique
+  pinHash          String
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  lastLoginAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  character        Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+}
+
+model BankLoginAttempt {
+  id                 String    @id @default(cuid())
+  campaignId         String
+  characterNameKey   String
+  failedAttemptCount Int       @default(0)
+  lockedUntil        DateTime?
+  lastAttemptAt      DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  campaign           Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, characterNameKey])
 }
 
 model Npc {
@@ -128,6 +188,10 @@ model Npc {
 model MonsterCompendiumEntry {
   id                String            @id @default(cuid())
   campaignId        String?
+  sourceKey         String?
+  sourceUrl         String?
+  sourceDocument    String?
+  compendiumSource  CompendiumSourceProvider?
   name              String
   challengeRating   String
   monsterType       String
@@ -142,6 +206,8 @@ model MonsterCompendiumEntry {
   updatedAt         DateTime          @updatedAt
   campaign          Campaign?         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   encounterMonsters EncounterMonster[]
+
+  @@unique([campaignId, sourceKey])
 }
 
 model Encounter {
@@ -168,18 +234,135 @@ model EncounterMonster {
 }
 
 model LootItem {
-  id            String                 @id @default(cuid())
+  id             String                 @id @default(cuid())
+  campaignId     String
+  sourceKey      String?
+  sourceUrl      String?
+  sourceDocument String?
+  compendiumSource CompendiumSourceProvider?
+  name           String
+  rarity         LootRarity
+  kind           LootKind
+  description    String
+  notes          String?
+  sourceTag      String?
+  goldValue      Int?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  campaign       Campaign               @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  ledgerEntries  InventoryLedgerEntry[] @relation("LootItemLedgerEntries")
+  craftingJobs   CraftingJob[]          @relation("CraftingJobLootItem")
+  storefrontOffers StorefrontOffer[]     @relation("StorefrontOfferLootItem")
+
+  @@unique([campaignId, sourceKey])
+}
+
+model Quest {
+  id                  String       @id @default(cuid())
+  campaignId          String
+  assigneeCharacterId String?
+  title               String
+  objective           String
+  rewardGold          Int          @default(0)
+  rewardText          String?
+  status              QuestStatus  @default(OPEN)
+  notes               String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  campaign            Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  assignee            Character?   @relation("QuestAssignee", fields: [assigneeCharacterId], references: [id], onDelete: SetNull)
+}
+
+model Storefront {
+  id          String            @id @default(cuid())
+  campaignId  String
+  name        String
+  keeperName  String?
+  description String
+  status      StorefrontStatus  @default(ACTIVE)
+  notes       String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  campaign    Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  offers      StorefrontOffer[]
+}
+
+model StorefrontOffer {
+  id              String      @id @default(cuid())
+  storefrontId    String
+  lootItemId      String?
+  itemName        String
+  itemDescription String
+  rarity          LootRarity
+  kind            LootKind
+  priceGold       Int
+  quantity        Int         @default(1)
+  notes           String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  storefront      Storefront  @relation(fields: [storefrontId], references: [id], onDelete: Cascade)
+  lootItem        LootItem?   @relation("StorefrontOfferLootItem", fields: [lootItemId], references: [id], onDelete: SetNull)
+}
+
+model MailThread {
+  id            String           @id @default(cuid())
   campaignId    String
-  name          String
-  rarity        LootRarity
-  kind          LootKind
-  description   String
-  sourceTag     String?
-  goldValue     Int?
-  createdAt     DateTime               @default(now())
-  updatedAt     DateTime               @updatedAt
-  campaign      Campaign               @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  ledgerEntries InventoryLedgerEntry[]
+  subject       String
+  senderName    String
+  recipientName String
+  status        MailThreadStatus @default(ACTIVE)
+  notes         String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  campaign      Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  messages      MailMessage[]
+}
+
+model MailMessage {
+  id         String     @id @default(cuid())
+  threadId   String
+  fromName   String
+  toName     String
+  body       String
+  isFromDm   Boolean    @default(false)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  thread     MailThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+}
+
+model CraftingRecipe {
+  id               String                @id @default(cuid())
+  campaignId       String
+  name             String
+  outputName       String
+  outputDescription String
+  outputRarity     LootRarity
+  outputKind       LootKind
+  inputText        String
+  goldCost         Int                   @default(0)
+  timeText         String?
+  notes            String?
+  status           CraftingRecipeStatus  @default(ACTIVE)
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  campaign         Campaign              @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  jobs             CraftingJob[]
+}
+
+model CraftingJob {
+  id          String            @id @default(cuid())
+  campaignId  String
+  recipeId    String?
+  characterId String?
+  lootItemId  String?
+  status      CraftingJobStatus @default(DRAFT)
+  notes       String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  campaign    Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipe      CraftingRecipe?   @relation(fields: [recipeId], references: [id], onDelete: SetNull)
+  character   Character?        @relation("CraftingJobCharacter", fields: [characterId], references: [id], onDelete: SetNull)
+  lootItem    LootItem?         @relation("CraftingJobLootItem", fields: [lootItemId], references: [id], onDelete: SetNull)
 }
 
 model InventoryLedgerEntry {
@@ -195,5 +378,5 @@ model InventoryLedgerEntry {
   createdAt   DateTime        @default(now())
   campaign    Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   character   Character       @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  lootItem    LootItem?       @relation(fields: [lootItemId], references: [id], onDelete: SetNull)
+  lootItem    LootItem?       @relation("LootItemLedgerEntries", fields: [lootItemId], references: [id], onDelete: SetNull)
 }

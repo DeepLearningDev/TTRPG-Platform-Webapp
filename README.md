@@ -14,15 +14,16 @@ Implemented now:
 - editable NPC and companion cards
 - compendium-backed encounter draft creation
 - manual loot awards into inventory or bank storage
+- quest board with reward tracking
+- storefronts with offer logging and sale recording
+- in-world mail threads with DM replies
+- crafting recipes and active crafting jobs
+- bounded compendium sync from Open5e with fallback monster import
 - player bank login and holdings view at `/bank`
 - local Prisma schema, SQLite database, and seed data
 
 Planned later:
 
-- quest and bounty board
-- NPC storefront
-- fake mail system
-- interactive crafting
 - advanced loot generation and party distribution
 - casino minigames and pet care
 
@@ -72,9 +73,10 @@ npm run build
 - `src/app/(player)/bank/account/page.tsx`: player holdings view
 - `prisma/schema.prisma`: data model
 - `prisma/seed.ts`: local demo data
+- `src/lib/compendium-source.ts`: bounded Open5e and fallback import helpers
 
 ## Remaining Gaps
 
-- DM auth is still local-trust and not yet enforced.
-- The current loot system is manual; advanced loot generation and party roll-room logic are still future work.
-- Quest board, storefront, mail, crafting, and casino systems are not implemented yet.
+- DM auth is now enforced, but it is still a simple local-session flow.
+- The current loot system is still manual; advanced loot generation and party roll-room logic are still future work.
+- Casino minigames, pet care, and richer loot distribution are still future work.
