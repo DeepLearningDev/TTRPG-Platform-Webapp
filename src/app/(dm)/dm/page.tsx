@@ -19,9 +19,11 @@ import {
   splitTags,
 } from "@/lib/format";
 import {
+  assignLootPoolItemAction,
   archiveNpcAction,
   archiveCampaignAction,
   awardLootAction,
+  bankLootPoolItemAction,
   completeCraftingJobAction,
   completeQuestAction,
   createCampaignAction,
@@ -34,9 +36,12 @@ import {
   createQuestAction,
   createStorefrontAction,
   createStorefrontOfferAction,
+  finalizeLootPoolAction,
+  generateLootPoolAction,
   recordStorefrontSaleAction,
   logoutDmAction,
   replyMailThreadAction,
+  rollLootPoolItemAction,
   syncCompendiumAction,
   updateCharacterAction,
   updateNpcAction,
@@ -69,6 +74,8 @@ const dmErrorMessages: Record<string, string> = {
     "That encounter could not be saved because the selected monster no longer belongs to this campaign.",
   "invalid-loot-state":
     "That loot award could not be completed because the selected character or item was invalid.",
+  "invalid-loot-pool-state":
+    "That loot pool action could not be completed because the source item, encounter, or recipient no longer matched this campaign.",
   "invalid-quest-state":
     "That quest could not be saved because the selected assignee or quest no longer matched this campaign.",
   "duplicate-quest-title":
@@ -114,12 +121,20 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     companions,
     filteredMonsters,
     partySummaries,
+    lootPools,
     quests,
     storefronts,
     mailThreads,
     craftingRecipes,
     craftingJobs,
   } = data;
+  const defaultPartyLevel = Math.max(
+    1,
+    Math.round(
+      partySummaries.reduce((sum, character) => sum + character.level, 0) /
+        Math.max(1, partySummaries.length),
+    ),
+  );
   const openQuests = quests.filter((quest) => quest.status !== QuestStatus.COMPLETE);
   const activeStorefronts = storefronts.filter(
     (storefront) => storefront.status === StorefrontStatus.ACTIVE,
@@ -607,6 +622,227 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                 </div>
               </div>
             ))}
+          </div>
+
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">Loot Generation</span>
+              <h3>Build a text reward pool</h3>
+            </div>
+          </div>
+
+          <form action={generateLootPoolAction} className="stack-form">
+            <input type="hidden" name="campaignId" value={campaign.id} />
+            <input type="hidden" name="campaignSlug" value={campaign.slug} />
+            <div className="subgrid">
+              <label className="field-label">
+                Encounter source
+                <select name="encounterId" defaultValue="">
+                  <option value="">Manual reward event</option>
+                  {campaign.encounters.map((encounter) => (
+                    <option key={encounter.id} value={encounter.id}>
+                      {encounter.title} · {formatDifficultyLabel(encounter.difficulty)} · level{" "}
+                      {encounter.partyLevel}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field-label">
+                Reward title
+                <input name="title" placeholder="Sunken shrine spoils" />
+              </label>
+              <label className="field-label">
+                Party level
+                <input
+                  defaultValue={defaultPartyLevel}
+                  max="20"
+                  min="1"
+                  name="partyLevel"
+                  type="number"
+                />
+              </label>
+              <label className="field-label">
+                Difficulty
+                <select name="difficulty" defaultValue={EncounterDifficulty.MEDIUM}>
+                  {Object.values(EncounterDifficulty).map((difficulty) => (
+                    <option key={difficulty} value={difficulty}>
+                      {formatDifficultyLabel(difficulty)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="subgrid">
+              <label className="field-label">
+                Pool note
+                <input name="sourceText" placeholder="Reward chest from the flooded gallery." />
+              </label>
+              <label className="field-label">
+                Item count
+                <input defaultValue="2" max="4" min="1" name="itemCount" type="number" />
+              </label>
+            </div>
+            <label className="field-label">
+              Notes
+              <textarea name="notes" placeholder="Why this pool exists or any special handling." />
+            </label>
+            <div className="button-row">
+              <button className="button-secondary" type="submit">
+                Generate loot pool
+              </button>
+            </div>
+          </form>
+
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">Loot Distribution</span>
+              <h3>Assign, roll, or bank items</h3>
+            </div>
+          </div>
+
+          <div className="card-stack">
+            {lootPools.length > 0 ? (
+              lootPools.map((pool) => (
+                <div className="item-card" key={pool.id}>
+                  <div className="card-header">
+                    <div>
+                      <div className="value-line">{pool.title}</div>
+                      <div className="muted">
+                        {pool.encounter
+                          ? `${pool.encounter.title} · ${formatDifficultyLabel(pool.encounter.difficulty)}`
+                          : pool.sourceText ?? "Manual reward pool"}
+                      </div>
+                    </div>
+                    <span className="tag">{formatEnumLabel(pool.status)}</span>
+                  </div>
+                  <p>
+                    Party level {pool.partyLevel}
+                    {pool.difficulty ? ` · ${formatDifficultyLabel(pool.difficulty)}` : ""}
+                  </p>
+                  {pool.notes ? <p className="muted">{pool.notes}</p> : null}
+                  <div className="list-card">
+                    {pool.items.map((item) => (
+                      <div className="list-item" key={item.id}>
+                        <div className="card-header">
+                          <div>
+                            <strong>{item.itemNameSnapshot}</strong>
+                            <div className="muted">
+                              {formatEnumLabel(item.raritySnapshot)} · {formatEnumLabel(item.kindSnapshot)} · ×{" "}
+                              {item.quantity}
+                            </div>
+                          </div>
+                          <span className="tag">{formatEnumLabel(item.status)}</span>
+                        </div>
+                        {item.awardedCharacter ? (
+                          <p className="muted">Assigned to {item.awardedCharacter.name}</p>
+                        ) : null}
+                        {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
+                        {item.rollEntries.length > 0 ? (
+                          <div className="tag-row">
+                            {item.rollEntries.map((entry) => (
+                              <span className="tag" key={entry.id}>
+                                {entry.character.name}
+                                {entry.rollTotal ? ` ${entry.rollTotal}` : ""} · {formatEnumLabel(entry.status)}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {item.status === "UNRESOLVED" || item.status === "BANKED" ? (
+                          <div className="card-stack">
+                            <form action={assignLootPoolItemAction} className="stack-form">
+                              <input type="hidden" name="campaignId" value={campaign.id} />
+                              <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                              <input type="hidden" name="lootPoolItemId" value={item.id} />
+                              <div className="subgrid">
+                                <label className="field-label">
+                                  Assign to
+                                  <select name="characterId" defaultValue={partySummaries[0]?.id}>
+                                    {partySummaries.map((character) => (
+                                      <option key={character.id} value={character.id}>
+                                        {character.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="field-label">
+                                  Destination
+                                  <select name="scope" defaultValue={HoldingScope.BANK}>
+                                    <option value={HoldingScope.BANK}>Bank</option>
+                                    <option value={HoldingScope.INVENTORY}>Inventory</option>
+                                  </select>
+                                </label>
+                              </div>
+                              <label className="field-label">
+                                Note
+                                <input name="note" placeholder="Direct award note" />
+                              </label>
+                              <div className="button-row">
+                                <button className="button-secondary" type="submit">
+                                  Assign item
+                                </button>
+                              </div>
+                            </form>
+
+                            <form action={rollLootPoolItemAction} className="stack-form">
+                              <input type="hidden" name="campaignId" value={campaign.id} />
+                              <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                              <input type="hidden" name="lootPoolItemId" value={item.id} />
+                              <div className="subgrid">
+                                <label className="field-label">
+                                  Roll destination
+                                  <select name="scope" defaultValue={HoldingScope.BANK}>
+                                    <option value={HoldingScope.BANK}>Bank</option>
+                                    <option value={HoldingScope.INVENTORY}>Inventory</option>
+                                  </select>
+                                </label>
+                                <label className="field-label">
+                                  Roll note
+                                  <input name="note" placeholder="Party roll note" />
+                                </label>
+                              </div>
+                              <div className="button-row">
+                                <button className="button-secondary" type="submit">
+                                  Run party roll
+                                </button>
+                              </div>
+                            </form>
+
+                            <form action={bankLootPoolItemAction} className="stack-form">
+                              <input type="hidden" name="campaignId" value={campaign.id} />
+                              <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                              <input type="hidden" name="lootPoolItemId" value={item.id} />
+                              <label className="field-label">
+                                Bank note
+                                <input name="note" placeholder="Keep this for later." />
+                              </label>
+                              <div className="button-row">
+                                <button className="button-secondary" type="submit">
+                                  Bank for later
+                                </button>
+                              </div>
+                            </form>
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                  {pool.items.every((item) => item.status !== "UNRESOLVED") ? (
+                    <form action={finalizeLootPoolAction} className="stack-form">
+                      <input type="hidden" name="campaignId" value={campaign.id} />
+                      <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                      <input type="hidden" name="lootPoolId" value={pool.id} />
+                      <div className="button-row">
+                        <button className="button-secondary" type="submit">
+                          Close pool
+                        </button>
+                      </div>
+                    </form>
+                  ) : null}
+                </div>
+              ))
+            ) : (
+              <div className="callout">No generated loot pools yet. Use the generator above or keep using manual awards.</div>
+            )}
           </div>
 
           <form action={awardLootAction} className="stack-form">

@@ -58,6 +58,34 @@ enum LootKind {
   TREASURE
 }
 
+enum LootPoolStatus {
+  OPEN
+  BANKED
+  RESOLVED
+  ARCHIVED
+}
+
+enum LootPoolItemStatus {
+  UNRESOLVED
+  BANKED
+  ASSIGNED
+  ROLLED
+}
+
+enum LootDistributionMode {
+  ASSIGN
+  ROLL
+  BANK
+}
+
+enum LootPoolRollStatus {
+  ELIGIBLE
+  ROLLED
+  WON
+  LOST
+  PASSED
+}
+
 enum MonsterSourceType {
   SRD
   OPEN
@@ -113,6 +141,7 @@ model Campaign {
   monsters          MonsterCompendiumEntry[]
   encounters        Encounter[]
   lootItems         LootItem[]
+  lootPools         LootPool[]
   quests            Quest[]
   storefronts       Storefront[]
   mailThreads       MailThread[]
@@ -136,6 +165,8 @@ model Character {
   bankAccess    BankAccess?
   quests        Quest[]                @relation("QuestAssignee")
   craftingJobs  CraftingJob[]          @relation("CraftingJobCharacter")
+  lootPoolAwards LootPoolItem[]        @relation("LootPoolAwardedCharacter")
+  lootPoolRolls LootPoolRollEntry[]    @relation("LootPoolRollCharacter")
   ledgerEntries InventoryLedgerEntry[]
 
   @@unique([campaignId, name])
@@ -221,6 +252,7 @@ model Encounter {
   updatedAt   DateTime             @updatedAt
   campaign    Campaign             @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   monsters    EncounterMonster[]
+  lootPools   LootPool[]
 }
 
 model EncounterMonster {
@@ -251,10 +283,66 @@ model LootItem {
   updatedAt      DateTime               @updatedAt
   campaign       Campaign               @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   ledgerEntries  InventoryLedgerEntry[] @relation("LootItemLedgerEntries")
+  lootPoolItems  LootPoolItem[]
   craftingJobs   CraftingJob[]          @relation("CraftingJobLootItem")
   storefrontOffers StorefrontOffer[]     @relation("StorefrontOfferLootItem")
 
   @@unique([campaignId, sourceKey])
+}
+
+model LootPool {
+  id          String             @id @default(cuid())
+  campaignId  String
+  encounterId String?
+  title       String
+  sourceText  String?
+  notes       String?
+  partyLevel  Int
+  difficulty  EncounterDifficulty?
+  status      LootPoolStatus     @default(OPEN)
+  resolvedAt  DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  campaign    Campaign           @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  encounter   Encounter?         @relation(fields: [encounterId], references: [id], onDelete: SetNull)
+  items       LootPoolItem[]
+}
+
+model LootPoolItem {
+  id                 String             @id @default(cuid())
+  lootPoolId         String
+  lootItemId         String?
+  awardedCharacterId String?
+  itemNameSnapshot   String
+  raritySnapshot     LootRarity
+  kindSnapshot       LootKind
+  quantity           Int                @default(1)
+  distributionMode   LootDistributionMode @default(ASSIGN)
+  status             LootPoolItemStatus @default(UNRESOLVED)
+  resolutionScope    HoldingScope?
+  resolutionNote     String?
+  resolutionMetadata String?
+  resolvedAt         DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  lootPool           LootPool           @relation(fields: [lootPoolId], references: [id], onDelete: Cascade)
+  lootItem           LootItem?          @relation(fields: [lootItemId], references: [id], onDelete: SetNull)
+  awardedCharacter   Character?         @relation("LootPoolAwardedCharacter", fields: [awardedCharacterId], references: [id], onDelete: SetNull)
+  rollEntries        LootPoolRollEntry[]
+}
+
+model LootPoolRollEntry {
+  id             String             @id @default(cuid())
+  lootPoolItemId String
+  characterId    String
+  rollTotal      Int?
+  status         LootPoolRollStatus @default(ELIGIBLE)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  lootPoolItem   LootPoolItem       @relation(fields: [lootPoolItemId], references: [id], onDelete: Cascade)
+  character      Character          @relation("LootPoolRollCharacter", fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([lootPoolItemId, characterId])
 }
 
 model Quest {

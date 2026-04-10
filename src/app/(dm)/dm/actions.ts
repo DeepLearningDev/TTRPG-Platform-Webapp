@@ -1,5 +1,6 @@
 "use server";
 
+import { randomInt } from "node:crypto";
 import {
   CampaignStatus,
   EncounterDifficulty,
@@ -7,8 +8,13 @@ import {
   LedgerEntryType,
   CraftingJobStatus,
   LootKind,
+  LootDistributionMode,
+  LootPoolItemStatus,
+  LootPoolRollStatus,
+  LootPoolStatus,
   LootRarity,
   NpcType,
+  Prisma,
   QuestStatus,
   StorefrontStatus,
 } from "@prisma/client";
@@ -28,6 +34,7 @@ import {
   requireDmSession,
   setDmSession,
 } from "@/lib/dm-session";
+import { generateLootPoolItems, runPartyLootRoll } from "@/lib/loot-generation";
 import { hashPin } from "@/lib/pin";
 import { prisma } from "@/lib/prisma";
 
@@ -121,6 +128,130 @@ async function resolveCampaignMutationContext(options: {
   }
 
   return campaign;
+}
+
+async function resolveLootPoolItemMutationContext(options: {
+  campaignSlug: string;
+  campaignId?: string | null;
+  lootPoolItemId: string;
+}) {
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: options.campaignSlug,
+    campaignId: options.campaignId,
+  });
+
+  const lootPoolItem = await prisma.lootPoolItem.findFirst({
+    where: {
+      id: options.lootPoolItemId,
+      lootPool: {
+        campaignId: campaign.id,
+      },
+    },
+    include: {
+      lootPool: {
+        select: {
+          id: true,
+          title: true,
+          campaignId: true,
+          status: true,
+        },
+      },
+      lootItem: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+    },
+  });
+
+  if (!lootPoolItem) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  if (lootPoolItem.lootPool.status === LootPoolStatus.ARCHIVED) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  return {
+    campaign,
+    lootPoolItem,
+  };
+}
+
+async function syncLootPoolResolutionState(lootPoolId: string) {
+  const [unresolvedCount, bankedCount] = await Promise.all([
+    prisma.lootPoolItem.count({
+      where: {
+        lootPoolId,
+        status: LootPoolItemStatus.UNRESOLVED,
+      },
+    }),
+    prisma.lootPoolItem.count({
+      where: {
+        lootPoolId,
+        status: LootPoolItemStatus.BANKED,
+      },
+    }),
+  ]);
+
+  const nextStatus =
+    unresolvedCount > 0
+      ? LootPoolStatus.OPEN
+      : bankedCount > 0
+        ? LootPoolStatus.BANKED
+        : LootPoolStatus.RESOLVED;
+
+  await prisma.lootPool.update({
+    where: {
+      id: lootPoolId,
+    },
+    data: {
+      status: nextStatus,
+      resolvedAt: nextStatus === LootPoolStatus.RESOLVED ? new Date() : null,
+    },
+  });
+}
+
+async function ensureLootPoolItemBackedLootItem(
+  client: Prisma.TransactionClient | typeof prisma,
+  input: {
+    campaignId: string;
+    lootPoolTitle: string;
+    lootPoolItem: {
+      id: string;
+      lootItemId: string | null;
+      itemNameSnapshot: string;
+      raritySnapshot: LootRarity;
+      kindSnapshot: LootKind;
+    };
+  },
+) {
+  if (input.lootPoolItem.lootItemId) {
+    return input.lootPoolItem.lootItemId;
+  }
+
+  const lootItem = await client.lootItem.create({
+    data: {
+      campaignId: input.campaignId,
+      name: input.lootPoolItem.itemNameSnapshot,
+      rarity: input.lootPoolItem.raritySnapshot,
+      kind: input.lootPoolItem.kindSnapshot,
+      description: `Loot pool item generated from ${input.lootPoolTitle}.`,
+      sourceTag: "Loot pool",
+    },
+  });
+
+  await client.lootPoolItem.update({
+    where: {
+      id: input.lootPoolItem.id,
+    },
+    data: {
+      lootItemId: lootItem.id,
+    },
+  });
+
+  return lootItem.id;
 }
 
 async function ensureUniqueCampaignName(name: string) {
@@ -400,10 +531,10 @@ export async function updateCharacterAction(formData: FormData) {
 
     await prisma.bankAccess.upsert({
       where: {
-        characterId: payload.id,
+        characterId: character.id,
       },
       create: {
-        characterId: payload.id,
+        characterId: character.id,
         pinHash: hashPin(nextPin),
       },
       update: {
@@ -767,6 +898,935 @@ export async function awardLootAction(formData: FormData) {
       quantity: lootItemId ? payload.quantity : 0,
       goldDelta: payload.goldDelta,
       note: payload.note.trim(),
+    },
+  });
+
+  redirectToCampaign(campaign.slug);
+}
+
+const lootPoolGenerationSchema = z.object({
+  campaignId: z.string().min(1),
+  campaignSlug: z.string().min(1),
+  encounterId: z.string().optional(),
+  title: z.string().optional(),
+  sourceText: z.string().optional(),
+  partyLevel: z.coerce.number().int().min(1).max(20),
+  difficulty: z.nativeEnum(EncounterDifficulty),
+  itemCount: z.coerce.number().int().min(1).max(4),
+  notes: z.string().optional(),
+});
+
+const lootPoolItemMutationSchema = z.object({
+  campaignSlug: z.string().min(1),
+  campaignId: z.string().optional(),
+  lootPoolItemId: z.string().min(1),
+});
+
+export async function generateLootPoolAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    lootPoolGenerationSchema,
+    {
+      campaignId: formData.get("campaignId"),
+      campaignSlug: formData.get("campaignSlug"),
+      encounterId: formData.get("encounterId") || undefined,
+      title: formData.get("title") || undefined,
+      sourceText: formData.get("sourceText") || undefined,
+      partyLevel: formData.get("partyLevel"),
+      difficulty: formData.get("difficulty"),
+      itemCount: formData.get("itemCount"),
+      notes: formData.get("notes") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-pool-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+  });
+
+  const encounterId = payload.encounterId?.trim() || null;
+  const encounter = encounterId
+    ? await prisma.encounter.findFirst({
+        where: {
+          id: encounterId,
+          campaignId: campaign.id,
+        },
+        select: {
+          id: true,
+          title: true,
+          difficulty: true,
+          partyLevel: true,
+        },
+      })
+    : null;
+
+  if (encounterId && !encounter) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const candidates = await prisma.lootItem.findMany({
+    where: {
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+      name: true,
+      rarity: true,
+      kind: true,
+      updatedAt: true,
+      goldValue: true,
+    },
+    orderBy: {
+      updatedAt: "desc",
+    },
+    take: 100,
+  });
+
+  if (candidates.length === 0) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const resolvedPartyLevel = encounter?.partyLevel ?? payload.partyLevel;
+  const resolvedDifficulty = encounter?.difficulty ?? payload.difficulty;
+  const resolvedTitle =
+    encounter?.title || payload.title?.trim() || `${campaign.name} reward pool`;
+  const resolvedSourceText =
+    payload.sourceText?.trim() ||
+    (encounter ? `Generated from encounter ${encounter.title}.` : "Generated reward pool.");
+
+  const items = generateLootPoolItems({
+    campaignId: campaign.id,
+    seedKey: `${encounter?.id ?? "manual"}|${resolvedTitle}|${Date.now()}`,
+    partyLevel: resolvedPartyLevel,
+    difficulty: resolvedDifficulty,
+    candidates,
+    maxItems: payload.itemCount,
+  });
+
+  if (items.length === 0) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  await prisma.lootPool.create({
+    data: {
+      campaignId: campaign.id,
+      encounterId: encounter?.id ?? null,
+      title: resolvedTitle,
+      sourceText: resolvedSourceText,
+      notes: payload.notes?.trim() || null,
+      partyLevel: resolvedPartyLevel,
+      difficulty: resolvedDifficulty,
+      status: LootPoolStatus.OPEN,
+      items: {
+        create: items,
+      },
+    },
+  });
+
+  redirectToCampaign(campaign.slug);
+}
+
+export async function assignLootPoolItemAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    lootPoolItemMutationSchema.extend({
+      characterId: z.string().min(1),
+      scope: z.nativeEnum(HoldingScope),
+    }),
+    {
+      campaignSlug: formData.get("campaignSlug"),
+      campaignId: formData.get("campaignId") || undefined,
+      lootPoolItemId: formData.get("lootPoolItemId"),
+      characterId: formData.get("characterId"),
+      scope: formData.get("scope"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-pool-state",
+    },
+  );
+
+  const { campaign, lootPoolItem } = await resolveLootPoolItemMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+    lootPoolItemId: payload.lootPoolItemId,
+  });
+
+  if (
+    lootPoolItem.status !== LootPoolItemStatus.UNRESOLVED &&
+    lootPoolItem.status !== LootPoolItemStatus.BANKED
+  ) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const character = await prisma.character.findFirst({
+    where: {
+      id: payload.characterId,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  if (!character) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const note =
+    readOptionalTextField(formData, "note") ??
+    `Loot pool award: ${lootPoolItem.itemNameSnapshot}`;
+  const resolvedAt = new Date();
+
+  const assigned = await prisma.$transaction(async (tx) => {
+    const lootItemId = await ensureLootPoolItemBackedLootItem(tx, {
+      campaignId: campaign.id,
+      lootPoolTitle: lootPoolItem.lootPool.title,
+      lootPoolItem,
+    });
+
+    const updated = await tx.lootPoolItem.updateMany({
+      where: {
+        id: lootPoolItem.id,
+        lootPoolId: lootPoolItem.lootPool.id,
+        status: {
+          in: [LootPoolItemStatus.UNRESOLVED, LootPoolItemStatus.BANKED],
+        },
+      },
+      data: {
+        distributionMode: LootDistributionMode.ASSIGN,
+        status: LootPoolItemStatus.ASSIGNED,
+        awardedCharacterId: character.id,
+        resolutionScope: payload.scope,
+        resolutionNote: note,
+        resolutionMetadata: `Assigned directly to ${character.name}.`,
+        resolvedAt,
+      },
+    });
+
+    if (updated.count === 0) {
+      return false;
+    }
+
+    await tx.inventoryLedgerEntry.create({
+      data: {
+        campaignId: campaign.id,
+        characterId: character.id,
+        lootItemId,
+        scope: payload.scope,
+        entryType: LedgerEntryType.AWARD,
+        quantity: lootPoolItem.quantity,
+        goldDelta: 0,
+        note,
+      },
+    });
+
+    await tx.lootPoolRollEntry.deleteMany({
+      where: {
+        lootPoolItemId: lootPoolItem.id,
+      },
+    });
+
+    return true;
+  });
+
+  if (!assigned) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  await syncLootPoolResolutionState(lootPoolItem.lootPool.id);
+  redirectToCampaign(campaign.slug);
+}
+
+export async function rollLootPoolItemAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    lootPoolItemMutationSchema.extend({
+      scope: z.nativeEnum(HoldingScope),
+    }),
+    {
+      campaignSlug: formData.get("campaignSlug"),
+      campaignId: formData.get("campaignId") || undefined,
+      lootPoolItemId: formData.get("lootPoolItemId"),
+      scope: formData.get("scope"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-pool-state",
+    },
+  );
+
+  const { campaign, lootPoolItem } = await resolveLootPoolItemMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+    lootPoolItemId: payload.lootPoolItemId,
+  });
+
+  if (
+    lootPoolItem.status !== LootPoolItemStatus.UNRESOLVED &&
+    lootPoolItem.status !== LootPoolItemStatus.BANKED
+  ) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const characters = await prisma.character.findMany({
+    where: {
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+      name: true,
+      level: true,
+    },
+    orderBy: {
+      name: "asc",
+    },
+  });
+
+  if (characters.length === 0) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const rollResult = runPartyLootRoll(characters, () => randomInt(1, 21));
+  const note =
+    readOptionalTextField(formData, "note") ??
+    `Loot roll winner: ${rollResult.winner.name}`;
+  const resolvedAt = new Date();
+
+  const rolled = await prisma.$transaction(async (tx) => {
+    const lootItemId = await ensureLootPoolItemBackedLootItem(tx, {
+      campaignId: campaign.id,
+      lootPoolTitle: lootPoolItem.lootPool.title,
+      lootPoolItem,
+    });
+
+    const updated = await tx.lootPoolItem.updateMany({
+      where: {
+        id: lootPoolItem.id,
+        lootPoolId: lootPoolItem.lootPool.id,
+        status: {
+          in: [LootPoolItemStatus.UNRESOLVED, LootPoolItemStatus.BANKED],
+        },
+      },
+      data: {
+        distributionMode: LootDistributionMode.ROLL,
+        status: LootPoolItemStatus.ROLLED,
+        awardedCharacterId: rollResult.winner.id,
+        resolutionScope: payload.scope,
+        resolutionNote: note,
+        resolutionMetadata: rollResult.summary,
+        resolvedAt,
+      },
+    });
+
+    if (updated.count === 0) {
+      return false;
+    }
+
+    await tx.lootPoolRollEntry.deleteMany({
+      where: {
+        lootPoolItemId: lootPoolItem.id,
+      },
+    });
+
+    await tx.lootPoolRollEntry.createMany({
+      data: rollResult.rolls.map((entry) => ({
+        lootPoolItemId: lootPoolItem.id,
+        characterId: entry.id,
+        rollTotal: entry.roll,
+        status:
+          entry.id === rollResult.winner.id
+            ? LootPoolRollStatus.WON
+            : LootPoolRollStatus.LOST,
+      })),
+    });
+
+    await tx.inventoryLedgerEntry.create({
+      data: {
+        campaignId: campaign.id,
+        characterId: rollResult.winner.id,
+        lootItemId,
+        scope: payload.scope,
+        entryType: LedgerEntryType.AWARD,
+        quantity: lootPoolItem.quantity,
+        goldDelta: 0,
+        note,
+      },
+    });
+
+    return true;
+  });
+
+  if (!rolled) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  await syncLootPoolResolutionState(lootPoolItem.lootPool.id);
+  redirectToCampaign(campaign.slug);
+}
+
+const lootPoolGenerationSchema = z.object({
+  campaignId: z.string().min(1),
+  campaignSlug: z.string().min(1),
+  encounterId: z.string().optional(),
+  title: z.string().optional(),
+  sourceText: z.string().optional(),
+  partyLevel: z.coerce.number().int().min(1).max(20).optional(),
+  difficulty: z.nativeEnum(EncounterDifficulty).optional(),
+  itemCount: z.coerce.number().int().min(1).max(4).optional(),
+  notes: z.string().optional(),
+});
+
+const lootPoolItemMutationSchema = z.object({
+  campaignSlug: z.string().min(1),
+  campaignId: z.string().optional(),
+  lootPoolItemId: z.string().min(1),
+});
+
+export async function generateLootPoolAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    lootPoolGenerationSchema,
+    {
+      campaignId: formData.get("campaignId"),
+      campaignSlug: formData.get("campaignSlug"),
+      encounterId: readOptionalTextField(formData, "encounterId") || undefined,
+      title: readOptionalTextField(formData, "title") || undefined,
+      sourceText: readOptionalTextField(formData, "sourceText") || undefined,
+      partyLevel: readOptionalNumberField(formData, "partyLevel") ?? undefined,
+      difficulty: readOptionalTextField(formData, "difficulty") || undefined,
+      itemCount: readOptionalNumberField(formData, "itemCount") ?? undefined,
+      notes: readOptionalTextField(formData, "notes") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-pool-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+  });
+
+  const encounterId = payload.encounterId?.trim() || null;
+  const encounter = encounterId
+    ? await prisma.encounter.findFirst({
+        where: {
+          id: encounterId,
+          campaignId: campaign.id,
+        },
+        select: {
+          id: true,
+          title: true,
+          difficulty: true,
+          partyLevel: true,
+        },
+      })
+    : null;
+
+  if (encounterId && !encounter) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const [candidates, campaignCharacters] = await Promise.all([
+    prisma.lootItem.findMany({
+      where: {
+        campaignId: campaign.id,
+      },
+      select: {
+        id: true,
+        name: true,
+        rarity: true,
+        kind: true,
+        updatedAt: true,
+        goldValue: true,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    }),
+    prisma.character.findMany({
+      where: {
+        campaignId: campaign.id,
+      },
+      select: {
+        level: true,
+      },
+    }),
+  ]);
+
+  if (candidates.length === 0) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const fallbackPartyLevel =
+    campaignCharacters.length > 0
+      ? Math.max(
+          1,
+          Math.round(
+            campaignCharacters.reduce((sum, character) => sum + character.level, 0) /
+              campaignCharacters.length,
+          ),
+        )
+      : 1;
+
+  const resolvedPartyLevel = payload.partyLevel ?? encounter?.partyLevel ?? fallbackPartyLevel;
+  const resolvedDifficulty =
+    payload.difficulty ?? encounter?.difficulty ?? EncounterDifficulty.MEDIUM;
+  const resolvedTitle =
+    payload.title?.trim() || encounter?.title || `${campaign.name} reward pool`;
+  const resolvedSourceText =
+    payload.sourceText?.trim() ||
+    (encounter ? `Encounter reward for ${encounter.title}.` : "Generated reward pool.");
+  const items = generateLootPoolItems({
+    campaignId: campaign.id,
+    seedKey:
+      encounter?.id ??
+      `${resolvedTitle}|${resolvedSourceText}|${payload.notes?.trim() || ""}|${resolvedPartyLevel}|${resolvedDifficulty}`,
+    partyLevel: resolvedPartyLevel,
+    difficulty: resolvedDifficulty,
+    candidates,
+    maxItems: payload.itemCount,
+  });
+
+  if (items.length === 0) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  await prisma.lootPool.create({
+    data: {
+      campaignId: campaign.id,
+      encounterId: encounter?.id ?? null,
+      title: resolvedTitle,
+      sourceText: resolvedSourceText,
+      notes: payload.notes?.trim() || null,
+      partyLevel: resolvedPartyLevel,
+      difficulty: resolvedDifficulty,
+      status: LootPoolStatus.OPEN,
+      items: {
+        create: items.map((item) => ({
+          ...item,
+          distributionMode: encounter ? LootDistributionMode.ROLL : LootDistributionMode.ASSIGN,
+        })),
+      },
+    },
+  });
+
+  redirectToCampaign(campaign.slug);
+}
+
+export async function assignLootPoolItemAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    lootPoolItemMutationSchema.extend({
+      characterId: z.string().min(1),
+      scope: z.nativeEnum(HoldingScope),
+      note: z.string().optional(),
+    }),
+    {
+      campaignSlug: formData.get("campaignSlug"),
+      campaignId: formData.get("campaignId") || undefined,
+      lootPoolItemId: formData.get("lootPoolItemId"),
+      characterId: formData.get("characterId"),
+      scope: formData.get("scope"),
+      note: readOptionalTextField(formData, "note") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-pool-state",
+    },
+  );
+
+  const { campaign, lootPoolItem } = await resolveLootPoolItemMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+    lootPoolItemId: payload.lootPoolItemId,
+  });
+
+  if (
+    lootPoolItem.status !== LootPoolItemStatus.UNRESOLVED &&
+    lootPoolItem.status !== LootPoolItemStatus.BANKED
+  ) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const character = await prisma.character.findFirst({
+    where: {
+      id: payload.characterId,
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  if (!character) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const note =
+    payload.note?.trim() ||
+    `Loot pool assignment from ${lootPoolItem.lootPool.title} to ${character.name}.`;
+  const resolvedAt = new Date();
+
+  const assigned = await prisma.$transaction(async (tx) => {
+    const lootItemId = await ensureLootPoolItemBackedLootItem(tx, {
+      campaignId: campaign.id,
+      lootPoolTitle: lootPoolItem.lootPool.title,
+      lootPoolItem,
+    });
+
+    const updated = await tx.lootPoolItem.updateMany({
+      where: {
+        id: lootPoolItem.id,
+        lootPoolId: lootPoolItem.lootPool.id,
+        status: {
+          in: [LootPoolItemStatus.UNRESOLVED, LootPoolItemStatus.BANKED],
+        },
+      },
+      data: {
+        distributionMode: LootDistributionMode.ASSIGN,
+        status: LootPoolItemStatus.ASSIGNED,
+        awardedCharacterId: character.id,
+        resolutionScope: payload.scope,
+        resolutionNote: note,
+        resolutionMetadata: `Assigned directly to ${character.name}.`,
+        resolvedAt,
+      },
+    });
+
+    if (updated.count === 0) {
+      return false;
+    }
+
+    await tx.inventoryLedgerEntry.create({
+      data: {
+        campaignId: campaign.id,
+        characterId: character.id,
+        lootItemId,
+        scope: payload.scope,
+        entryType: LedgerEntryType.AWARD,
+        quantity: lootPoolItem.quantity,
+        goldDelta: 0,
+        note,
+      },
+    });
+
+    await tx.lootPoolRollEntry.deleteMany({
+      where: {
+        lootPoolItemId: lootPoolItem.id,
+      },
+    });
+
+    return true;
+  });
+
+  if (!assigned) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  await syncLootPoolResolutionState(lootPoolItem.lootPool.id);
+  redirectToCampaign(campaign.slug);
+}
+
+export async function rollLootPoolItemAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    lootPoolItemMutationSchema.extend({
+      scope: z.nativeEnum(HoldingScope),
+      note: z.string().optional(),
+    }),
+    {
+      campaignSlug: formData.get("campaignSlug"),
+      campaignId: formData.get("campaignId") || undefined,
+      lootPoolItemId: formData.get("lootPoolItemId"),
+      scope: formData.get("scope"),
+      note: readOptionalTextField(formData, "note") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-pool-state",
+    },
+  );
+
+  const { campaign, lootPoolItem } = await resolveLootPoolItemMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+    lootPoolItemId: payload.lootPoolItemId,
+  });
+
+  if (
+    lootPoolItem.status !== LootPoolItemStatus.UNRESOLVED &&
+    lootPoolItem.status !== LootPoolItemStatus.BANKED
+  ) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const characters = await prisma.character.findMany({
+    where: {
+      campaignId: campaign.id,
+    },
+    select: {
+      id: true,
+      name: true,
+      level: true,
+    },
+    orderBy: {
+      name: "asc",
+    },
+  });
+
+  if (characters.length === 0) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const rollResult = runPartyLootRoll(characters, () => randomInt(1, 21));
+  const note =
+    payload.note?.trim() || `${lootPoolItem.lootPool.title}: ${rollResult.summary}`;
+  const resolvedAt = new Date();
+
+  const rolled = await prisma.$transaction(async (tx) => {
+    const lootItemId = await ensureLootPoolItemBackedLootItem(tx, {
+      campaignId: campaign.id,
+      lootPoolTitle: lootPoolItem.lootPool.title,
+      lootPoolItem,
+    });
+
+    const updated = await tx.lootPoolItem.updateMany({
+      where: {
+        id: lootPoolItem.id,
+        lootPoolId: lootPoolItem.lootPool.id,
+        status: {
+          in: [LootPoolItemStatus.UNRESOLVED, LootPoolItemStatus.BANKED],
+        },
+      },
+      data: {
+        distributionMode: LootDistributionMode.ROLL,
+        status: LootPoolItemStatus.ROLLED,
+        awardedCharacterId: rollResult.winner.id,
+        resolutionScope: payload.scope,
+        resolutionNote: note,
+        resolutionMetadata: rollResult.summary,
+        resolvedAt,
+      },
+    });
+
+    if (updated.count === 0) {
+      return false;
+    }
+
+    await tx.lootPoolRollEntry.deleteMany({
+      where: {
+        lootPoolItemId: lootPoolItem.id,
+      },
+    });
+
+    await tx.lootPoolRollEntry.createMany({
+      data: rollResult.rolls.map((entry) => ({
+        lootPoolItemId: lootPoolItem.id,
+        characterId: entry.id,
+        rollTotal: entry.roll,
+        status:
+          entry.id === rollResult.winner.id
+            ? LootPoolRollStatus.WON
+            : LootPoolRollStatus.LOST,
+      })),
+    });
+
+    await tx.inventoryLedgerEntry.create({
+      data: {
+        campaignId: campaign.id,
+        characterId: rollResult.winner.id,
+        lootItemId,
+        scope: payload.scope,
+        entryType: LedgerEntryType.AWARD,
+        quantity: lootPoolItem.quantity,
+        goldDelta: 0,
+        note,
+      },
+    });
+
+    return true;
+  });
+
+  if (!rolled) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  await syncLootPoolResolutionState(lootPoolItem.lootPool.id);
+  redirectToCampaign(campaign.slug);
+}
+
+export async function deferLootPoolItemAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    lootPoolItemMutationSchema.extend({
+      status: z.enum([LootPoolItemStatus.UNRESOLVED, LootPoolItemStatus.BANKED]),
+      note: z.string().optional(),
+    }),
+    {
+      campaignSlug: formData.get("campaignSlug"),
+      campaignId: formData.get("campaignId") || undefined,
+      lootPoolItemId: formData.get("lootPoolItemId"),
+      status: formData.get("status"),
+      note: readOptionalTextField(formData, "note") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-pool-state",
+    },
+  );
+
+  const { campaign, lootPoolItem } = await resolveLootPoolItemMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+    lootPoolItemId: payload.lootPoolItemId,
+  });
+
+  if (
+    lootPoolItem.status !== LootPoolItemStatus.UNRESOLVED &&
+    lootPoolItem.status !== LootPoolItemStatus.BANKED
+  ) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const deferred = await prisma.$transaction(async (tx) => {
+    const updated = await tx.lootPoolItem.updateMany({
+      where: {
+        id: lootPoolItem.id,
+        lootPoolId: lootPoolItem.lootPool.id,
+        status: {
+          in: [LootPoolItemStatus.UNRESOLVED, LootPoolItemStatus.BANKED],
+        },
+      },
+      data: {
+        distributionMode:
+          payload.status === LootPoolItemStatus.BANKED
+            ? LootDistributionMode.BANK
+            : LootDistributionMode.ASSIGN,
+        status: payload.status,
+        awardedCharacterId: null,
+        resolutionScope: null,
+        resolutionNote:
+          payload.note?.trim() ||
+          (payload.status === LootPoolItemStatus.BANKED
+            ? "Held for later party distribution."
+            : "Returned to unresolved party loot."),
+        resolutionMetadata: null,
+        resolvedAt: null,
+      },
+    });
+
+    if (updated.count === 0) {
+      return false;
+    }
+
+    await tx.lootPoolRollEntry.deleteMany({
+      where: {
+        lootPoolItemId: lootPoolItem.id,
+      },
+    });
+
+    return true;
+  });
+
+  if (!deferred) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  await syncLootPoolResolutionState(lootPoolItem.lootPool.id);
+  redirectToCampaign(campaign.slug);
+}
+
+export async function bankLootPoolItemAction(formData: FormData) {
+  const nextFormData = new FormData();
+
+  for (const [key, value] of formData.entries()) {
+    nextFormData.append(key, value);
+  }
+
+  nextFormData.set("status", LootPoolItemStatus.BANKED);
+
+  return deferLootPoolItemAction(nextFormData);
+}
+
+export async function finalizeLootPoolAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    z.object({
+      campaignId: z.string().min(1),
+      campaignSlug: z.string().min(1),
+      lootPoolId: z.string().min(1),
+    }),
+    {
+      campaignId: formData.get("campaignId"),
+      campaignSlug: formData.get("campaignSlug"),
+      lootPoolId: formData.get("lootPoolId"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-pool-state",
+    },
+  );
+
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId,
+  });
+
+  const lootPool = await prisma.lootPool.findFirst({
+    where: {
+      id: payload.lootPoolId,
+      campaignId: campaign.id,
+    },
+    include: {
+      items: {
+        select: {
+          id: true,
+          status: true,
+        },
+      },
+    },
+  });
+
+  if (!lootPool) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  if (lootPool.items.some((item) => item.status === LootPoolItemStatus.UNRESOLVED)) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  await prisma.lootPool.update({
+    where: {
+      id: lootPool.id,
+    },
+    data: {
+      status: LootPoolStatus.ARCHIVED,
+      resolvedAt: lootPool.resolvedAt ?? new Date(),
     },
   });
 

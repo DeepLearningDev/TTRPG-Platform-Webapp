@@ -44,6 +44,38 @@ const dashboardInclude = {
       updatedAt: "desc" as const,
     },
   },
+  lootPools: {
+    include: {
+      encounter: {
+        select: {
+          id: true,
+          title: true,
+          difficulty: true,
+          partyLevel: true,
+        },
+      },
+      items: {
+        include: {
+          lootItem: true,
+          awardedCharacter: true,
+          rollEntries: {
+            include: {
+              character: true,
+            },
+            orderBy: {
+              createdAt: "asc" as const,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: "asc" as const,
+        },
+      },
+    },
+    orderBy: {
+      updatedAt: "desc" as const,
+    },
+  },
   quests: {
     include: {
       assignee: true,
@@ -189,6 +221,7 @@ export async function getDashboardData(options?: {
     companions: campaign.npcs.filter((npc) => npc.type === NpcType.COMPANION),
     filteredMonsters,
     partySummaries,
+    lootPools: campaign.lootPools,
     quests: campaign.quests,
     storefronts: campaign.storefronts,
     mailThreads: campaign.mailThreads,
@@ -303,6 +336,39 @@ export async function getPlayerAccountBySession(input: {
             },
             take: 10,
           },
+          lootPools: {
+            include: {
+              encounter: {
+                select: {
+                  id: true,
+                  title: true,
+                  difficulty: true,
+                  partyLevel: true,
+                },
+              },
+              items: {
+                include: {
+                  lootItem: true,
+                  awardedCharacter: true,
+                  rollEntries: {
+                    include: {
+                      character: true,
+                    },
+                    orderBy: {
+                      createdAt: "asc",
+                    },
+                  },
+                },
+                orderBy: {
+                  createdAt: "asc",
+                },
+              },
+            },
+            orderBy: {
+              updatedAt: "desc",
+            },
+            take: 10,
+          },
         },
       },
       ledgerEntries: {
@@ -324,6 +390,7 @@ export async function getPlayerAccountBySession(input: {
     ...character,
     bankSnapshot: deriveHoldings(character.ledgerEntries, HoldingScope.BANK),
     inventorySnapshot: deriveHoldings(character.ledgerEntries, HoldingScope.INVENTORY),
+    lootPools: character.campaign.lootPools,
     visibleMailThreads: character.campaign.mailThreads.filter((thread) => {
       const nameKey = character.name.toLowerCase();
       const playerKey = character.playerName.toLowerCase();

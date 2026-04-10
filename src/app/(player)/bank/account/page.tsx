@@ -75,6 +75,74 @@ export default async function BankAccountPage() {
             <div>
               <span className="section-kicker">
                 <Package2 size={14} />
+                Loot pools
+              </span>
+              <h2>Pending and recent distribution</h2>
+            </div>
+          </div>
+          <div className="card-stack">
+            {account.lootPools.length > 0 ? (
+              account.lootPools.map((pool) => (
+                <div className="item-card" key={pool.id}>
+                  <div className="card-header">
+                    <div>
+                      <div className="value-line">{pool.title}</div>
+                      <div className="muted">
+                        {pool.encounter
+                          ? `${pool.encounter.title} · level ${pool.encounter.partyLevel}`
+                          : pool.sourceText ?? "Manual reward pool"}
+                      </div>
+                    </div>
+                    <span className="tag">{formatEnumLabel(pool.status)}</span>
+                  </div>
+                  <div className="card-stack">
+                    {pool.items.map((item) => {
+                      const myRoll = item.rollEntries.find(
+                        (entry) => entry.characterId === account.id,
+                      );
+
+                      return (
+                        <div className="list-item" key={item.id}>
+                          <div className="card-header">
+                            <div>
+                              <strong>{item.itemNameSnapshot}</strong>
+                              <div className="muted">
+                                {formatEnumLabel(item.raritySnapshot)} · {formatEnumLabel(item.kindSnapshot)} · ×{" "}
+                                {item.quantity}
+                              </div>
+                            </div>
+                            <span className="tag">{formatEnumLabel(item.status)}</span>
+                          </div>
+                          <p className="muted">
+                            {item.awardedCharacter
+                              ? `Assigned to ${item.awardedCharacter.name}`
+                              : item.status === "BANKED"
+                                ? "Held for later party distribution"
+                                : "Still unresolved"}
+                          </p>
+                          {myRoll ? (
+                            <p className="muted">
+                              Your roll: {myRoll.rollTotal ?? "not rolled"} · {formatEnumLabel(myRoll.status)}
+                            </p>
+                          ) : null}
+                          {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="callout">No shared loot pools are active right now.</div>
+            )}
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <Package2 size={14} />
                 Bank contents
               </span>
               <h2>Stored gear</h2>
