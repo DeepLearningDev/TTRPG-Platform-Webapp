@@ -41,7 +41,12 @@ import {
   requireDmSession,
   setDmSession,
 } from "@/lib/dm-session";
-import { generateLootPoolItems, runPartyLootRoll } from "@/lib/loot-generation";
+import {
+  computeLootGenerationProfile,
+  generateEncounterMaterialDrops,
+  generateLootPoolItems,
+  runPartyLootRoll,
+} from "@/lib/loot-generation";
 import { hashPin } from "@/lib/pin";
 import { prisma } from "@/lib/prisma";
 
@@ -920,6 +925,7 @@ const lootPoolGenerationSchema = z.object({
   partyLevel: z.coerce.number().int().min(1).max(20).optional(),
   difficulty: z.nativeEnum(EncounterDifficulty).optional(),
   itemCount: z.coerce.number().int().min(1).max(4).optional(),
+  includeMonsterMaterials: z.boolean().optional(),
   notes: z.string().optional(),
 });
 
@@ -944,6 +950,7 @@ export async function generateLootPoolAction(formData: FormData) {
       partyLevel: readOptionalNumberField(formData, "partyLevel") ?? undefined,
       difficulty: readOptionalTextField(formData, "difficulty") || undefined,
       itemCount: readOptionalNumberField(formData, "itemCount") ?? undefined,
+      includeMonsterMaterials: readBooleanField(formData, "includeMonsterMaterials"),
       notes: readOptionalTextField(formData, "notes") || undefined,
     },
     {
@@ -969,6 +976,18 @@ export async function generateLootPoolAction(formData: FormData) {
           title: true,
           difficulty: true,
           partyLevel: true,
+          monsters: {
+            include: {
+              monster: {
+                select: {
+                  name: true,
+                  monsterType: true,
+                  tags: true,
+                  specialDrops: true,
+                },
+              },
+            },
+          },
         },
       })
     : null;
@@ -1004,10 +1023,6 @@ export async function generateLootPoolAction(formData: FormData) {
     }),
   ]);
 
-  if (candidates.length === 0) {
-    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
-  }
-
   const fallbackPartyLevel =
     campaignCharacters.length > 0
       ? Math.max(
@@ -1027,16 +1042,57 @@ export async function generateLootPoolAction(formData: FormData) {
   const resolvedSourceText =
     payload.sourceText?.trim() ||
     (encounter ? `Encounter reward for ${encounter.title}.` : "Generated reward pool.");
-  const items = generateLootPoolItems({
-    campaignId: campaign.id,
-    seedKey:
-      encounter?.id ??
-      `${resolvedTitle}|${resolvedSourceText}|${payload.notes?.trim() || ""}|${resolvedPartyLevel}|${resolvedDifficulty}`,
-    partyLevel: resolvedPartyLevel,
-    difficulty: resolvedDifficulty,
-    candidates,
-    maxItems: payload.itemCount,
-  });
+  const seedKey =
+    encounter?.id ??
+    `${resolvedTitle}|${resolvedSourceText}|${payload.notes?.trim() || ""}|${resolvedPartyLevel}|${resolvedDifficulty}`;
+  const requestedItemCount =
+    payload.itemCount ??
+    computeLootGenerationProfile(resolvedPartyLevel, resolvedDifficulty).itemCount;
+  const materialItemBudget =
+    encounter && payload.includeMonsterMaterials
+      ? Math.min(
+          requestedItemCount,
+          resolvedDifficulty === EncounterDifficulty.BOSS ? 2 : 1,
+        )
+      : 0;
+  const materialItems =
+    encounter && materialItemBudget > 0
+      ? generateEncounterMaterialDrops({
+          seedKey,
+          difficulty: resolvedDifficulty,
+          candidates,
+          monsters: encounter.monsters.map((slot) => ({
+            name: slot.monster.name,
+            monsterType: slot.monster.monsterType,
+            tags: slot.monster.tags,
+            specialDrops: slot.monster.specialDrops,
+            quantity: slot.quantity,
+          })),
+          maxItems: materialItemBudget,
+        })
+      : [];
+  const materialItemNames = new Set(
+    materialItems.map((item) => item.itemNameSnapshot.trim().toLowerCase()),
+  );
+  const standardCandidates =
+    materialItemNames.size > 0
+      ? candidates.filter(
+          (candidate) => !materialItemNames.has(candidate.name.trim().toLowerCase()),
+        )
+      : candidates;
+  const standardItemBudget = Math.max(0, requestedItemCount - materialItems.length);
+  const standardItems =
+    standardCandidates.length > 0 && standardItemBudget > 0
+      ? generateLootPoolItems({
+          campaignId: campaign.id,
+          seedKey,
+          partyLevel: resolvedPartyLevel,
+          difficulty: resolvedDifficulty,
+          candidates: standardCandidates,
+          maxItems: standardItemBudget,
+        })
+      : [];
+  const items = [...materialItems, ...standardItems];
 
   if (items.length === 0) {
     redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");

@@ -691,6 +691,10 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               </label>
             </div>
             <label className="field-label">
+              <span>Monster material drops</span>
+              <input defaultChecked name="includeMonsterMaterials" type="checkbox" value="true" />
+            </label>
+            <label className="field-label">
               Notes
               <textarea name="notes" placeholder="Why this pool exists or any special handling." />
             </label>
@@ -741,6 +745,9 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                           </div>
                           <span className="tag">{formatEnumLabel(item.status)}</span>
                         </div>
+                        {!item.lootItem ? (
+                          <p className="muted">This pool item will become a loot record when it is assigned, rolled, or banked.</p>
+                        ) : null}
                         {item.awardedCharacter ? (
                           <p className="muted">Assigned to {item.awardedCharacter.name}</p>
                         ) : null}

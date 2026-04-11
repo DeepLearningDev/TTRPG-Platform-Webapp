@@ -6,6 +6,7 @@ import {
 } from "@prisma/client";
 import {
   computeLootGenerationProfile,
+  generateEncounterMaterialDrops,
   generateLootPoolItems,
   runPartyLootRoll,
 } from "@/lib/loot-generation";
@@ -93,5 +94,47 @@ describe("runPartyLootRoll", () => {
     expect(result.winner.name).toBe("Toren");
     expect(result.rolls.map((entry) => entry.roll)).toEqual([17, 12, 9]);
     expect(result.summary).toContain("Winner: Toren.");
+  });
+});
+
+describe("generateEncounterMaterialDrops", () => {
+  it("derives bounded crafting materials from encounter monsters", () => {
+    const now = new Date("2026-04-09T12:00:00.000Z");
+    const items = generateEncounterMaterialDrops({
+      seedKey: "encounter-2",
+      difficulty: EncounterDifficulty.BOSS,
+      maxItems: 2,
+      candidates: [
+        {
+          id: "existing-shadow-essence",
+          name: "Shadow Essence",
+          rarity: LootRarity.RARE,
+          kind: LootKind.TREASURE,
+          updatedAt: now,
+          goldValue: 350,
+        },
+      ],
+      monsters: [
+        {
+          name: "Ashen Drake",
+          monsterType: "dragon",
+          tags: "fire,boss",
+          specialDrops: "",
+          quantity: 1,
+        },
+        {
+          name: "Bone Warden",
+          monsterType: "undead",
+          tags: "crypt",
+          specialDrops: "Shadow Essence",
+          quantity: 2,
+        },
+      ],
+    });
+
+    expect(items.length).toBe(2);
+    expect(items.some((item) => item.itemNameSnapshot === "Ancient Dragon Heart")).toBe(true);
+    expect(items.some((item) => item.itemNameSnapshot === "Shadow Essence")).toBe(true);
+    expect(items.every((item) => item.kindSnapshot === LootKind.TREASURE)).toBe(true);
   });
 });
