@@ -2,6 +2,7 @@ import { Coins, Package2, ScrollText, Store, Wrench } from "lucide-react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getPlayerAccountBySession } from "@/lib/campaign-vault";
+import { formatCraftingMaterials, parseCraftingMaterials } from "@/lib/crafting-resolution";
 import { formatCopperAsGold, formatEnumLabel } from "@/lib/format";
 import { clearPlayerSession, getPlayerSession } from "@/lib/player-session";
 import { logoutBankAction } from "../actions";
@@ -340,6 +341,17 @@ export default async function BankAccountPage() {
                     <span className="tag">{formatEnumLabel(job.status)}</span>
                   </div>
                   <p>{job.notes ?? "DM-managed crafting progress."}</p>
+                  <p className="muted">
+                    <strong>Materials:</strong>{" "}
+                    {formatCraftingMaterials(parseCraftingMaterials(job.recipe?.materialsText ?? ""))}
+                  </p>
+                  {job.resolutionOutcome ? (
+                    <p className="muted">
+                      <strong>{formatEnumLabel(job.resolutionOutcome)}:</strong> {job.resolutionText}
+                    </p>
+                  ) : (
+                    <p className="muted">Waiting on the DM to resolve the current crafting check.</p>
+                  )}
                 </div>
               ))
             ) : (

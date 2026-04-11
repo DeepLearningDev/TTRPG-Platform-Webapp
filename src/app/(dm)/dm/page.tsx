@@ -13,6 +13,12 @@ import Link from "next/link";
 import { requireDmSession } from "@/lib/dm-session";
 import { getDashboardData } from "@/lib/campaign-vault";
 import {
+  deriveCraftingHoldings,
+  formatCraftingMaterials,
+  parseCraftingMaterials,
+  summarizeCraftingMaterials,
+} from "@/lib/crafting-resolution";
+import {
   formatCopperAsGold,
   formatDifficultyLabel,
   formatEnumLabel,
@@ -90,6 +96,8 @@ const dmErrorMessages: Record<string, string> = {
     "That crafting change could not be saved because the recipe, character, or job was invalid.",
   "duplicate-recipe-name":
     "A crafting recipe with that name already exists in this campaign.",
+  "insufficient-crafting-materials":
+    "That crafter does not currently hold all of the required materials for this recipe.",
   "invalid-campaign-name":
     "Please choose a different campaign name.",
   "duplicate-campaign-name":
@@ -1690,6 +1698,14 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               <textarea name="inputText" placeholder="Required materials or craft steps." required />
             </label>
             <label className="field-label">
+              Structured materials
+              <textarea
+                name="materialsText"
+                placeholder="2x Leather, 1x Silver Thread, 1x Ward Chalk"
+                required
+              />
+            </label>
+            <label className="field-label">
               Notes
               <textarea name="notes" placeholder="Special crafting rules or hooks." />
             </label>
@@ -1701,85 +1717,110 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           </form>
 
           <div className="card-stack">
-            {craftingRecipes.map((recipe) => (
-              <div className="item-card" key={recipe.id}>
-                <div className="card-header">
-                  <div>
-                    <div className="value-line">{recipe.name}</div>
-                    <div className="muted">
-                      Outputs {recipe.outputName} · {formatCopperAsGold(recipe.goldCost)}
-                    </div>
-                  </div>
-                  <span className="tag">{formatEnumLabel(recipe.status)}</span>
-                </div>
-                <p>{recipe.inputText}</p>
-                <p className="muted">{recipe.outputDescription}</p>
-                <form action={createCraftingJobAction} className="stack-form">
-                  <input type="hidden" name="campaignId" value={campaign.id} />
-                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
-                  <input type="hidden" name="recipeId" value={recipe.id} />
-                  <div className="subgrid">
-                    <label className="field-label">
-                      Crafter
-                      <select name="characterId" defaultValue={partySummaries[0]?.id}>
-                        {partySummaries.map((character) => (
-                          <option key={character.id} value={character.id}>
-                            {character.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="field-label">
-                      Notes
-                      <input name="notes" placeholder="Pending materials from the next session." />
-                    </label>
-                  </div>
-                  <div className="button-row">
-                    <button className="button-secondary" type="submit">
-                      Start job
-                    </button>
-                  </div>
-                </form>
+            {craftingRecipes.map((recipe) => {
+              const recipeMaterials = parseCraftingMaterials(recipe.materialsText);
 
-                <div className="list-card">
-                  {recipe.jobs.map((job) => (
-                    <div className="list-item" key={job.id}>
-                      <div className="card-header">
-                        <strong>{job.character?.name ?? "Unknown crafter"}</strong>
-                        <span className="tag">{formatEnumLabel(job.status)}</span>
+              return (
+                <div className="item-card" key={recipe.id}>
+                  <div className="card-header">
+                    <div>
+                      <div className="value-line">{recipe.name}</div>
+                      <div className="muted">
+                        Outputs {recipe.outputName} · {formatCopperAsGold(recipe.goldCost)}
                       </div>
-                      <p>{job.notes ?? "No notes yet."}</p>
-                      <form action={completeCraftingJobAction} className="stack-form">
-                        <input type="hidden" name="id" value={job.id} />
-                        <input type="hidden" name="campaignSlug" value={campaign.slug} />
-                        <div className="subgrid">
-                          <label className="field-label">
-                            Destination
-                            <select defaultValue={HoldingScope.BANK} name="scope">
-                              <option value={HoldingScope.BANK}>Bank</option>
-                              <option value={HoldingScope.INVENTORY}>Inventory</option>
-                            </select>
-                          </label>
-                          <label className="field-label">
-                            Reward note
-                            <input
-                              defaultValue={`Crafted ${recipe.outputName}`}
-                              name="note"
-                              readOnly
-                            />
-                          </label>
-                        </div>
-                        <div className="button-row">
-                          <button className="button-secondary" type="submit">
-                            Complete job
-                          </button>
-                        </div>
-                      </form>
                     </div>
-                  ))}
+                    <span className="tag">{formatEnumLabel(recipe.status)}</span>
+                  </div>
+                  <p>{recipe.inputText}</p>
+                  <p className="muted">{recipe.outputDescription}</p>
+                  <p className="muted">
+                    <strong>Materials:</strong> {formatCraftingMaterials(recipeMaterials)}
+                  </p>
+                  <form action={createCraftingJobAction} className="stack-form">
+                    <input type="hidden" name="campaignId" value={campaign.id} />
+                    <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                    <input type="hidden" name="recipeId" value={recipe.id} />
+                    <div className="subgrid">
+                      <label className="field-label">
+                        Crafter
+                        <select name="characterId" defaultValue={partySummaries[0]?.id}>
+                          {partySummaries.map((character) => (
+                            <option key={character.id} value={character.id}>
+                              {character.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field-label">
+                        Notes
+                        <input name="notes" placeholder="Pending materials from the next session." />
+                      </label>
+                    </div>
+                    <div className="button-row">
+                      <button className="button-secondary" type="submit">
+                        Start job
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="list-card">
+                    {recipe.jobs.map((job) => {
+                      const crafter = partySummaries.find((character) => character.id === job.characterId);
+                      const materialCheck = crafter
+                        ? summarizeCraftingMaterials(
+                            recipeMaterials,
+                            deriveCraftingHoldings(crafter.ledgerEntries),
+                          )
+                        : null;
+
+                      return (
+                        <div className="list-item" key={job.id}>
+                          <div className="card-header">
+                            <strong>{job.character?.name ?? "Unknown crafter"}</strong>
+                            <span className="tag">{formatEnumLabel(job.status)}</span>
+                          </div>
+                          <p>{job.notes ?? "No notes yet."}</p>
+                          <p className="muted">
+                            {materialCheck
+                              ? materialCheck.isMet
+                                ? "Materials ready from current holdings."
+                                : `Missing: ${materialCheck.missing.join(", ")}`
+                              : "Crafter holdings are unavailable."}
+                          </p>
+                          {job.resolutionText ? <p className="muted">{job.resolutionText}</p> : null}
+                          {job.status === CraftingJobStatus.IN_PROGRESS ? (
+                            <form action={completeCraftingJobAction} className="stack-form">
+                              <input type="hidden" name="id" value={job.id} />
+                              <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                              <div className="subgrid">
+                                <label className="field-label">
+                                  Destination
+                                  <select defaultValue={HoldingScope.BANK} name="scope">
+                                    <option value={HoldingScope.BANK}>Bank</option>
+                                    <option value={HoldingScope.INVENTORY}>Inventory</option>
+                                  </select>
+                                </label>
+                                <div className="field-label">
+                                  Resolution
+                                  <div className="callout">
+                                    Rolls server-side and applies success, mixed, or failure text.
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="button-row">
+                                <button className="button-secondary" type="submit">
+                                  Resolve craft
+                                </button>
+                              </div>
+                            </form>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </article>
       </section>

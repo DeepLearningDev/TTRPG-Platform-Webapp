@@ -3,6 +3,7 @@
 import { randomInt } from "node:crypto";
 import {
   CampaignStatus,
+  CraftingResolutionOutcome,
   EncounterDifficulty,
   HoldingScope,
   LedgerEntryType,
@@ -22,6 +23,12 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { importCompendiumBatch, clampImportBudget } from "@/lib/compendium-source";
+import {
+  buildCraftingConsumptionPlan,
+  deriveCraftingHoldings,
+  parseCraftingMaterials,
+  resolveCraftingOutcome,
+} from "@/lib/crafting-resolution";
 import { parseTagInput } from "@/lib/campaign-vault";
 import {
   readBooleanField,
@@ -2142,6 +2149,7 @@ export async function createCraftingRecipeAction(formData: FormData) {
       outputRarity: z.nativeEnum(LootRarity),
       outputKind: z.nativeEnum(LootKind),
       inputText: z.string().min(3),
+      materialsText: z.string().min(3),
       goldCost: z.coerce.number().int().min(0).max(100_000),
     }),
     {
@@ -2151,6 +2159,7 @@ export async function createCraftingRecipeAction(formData: FormData) {
       outputRarity: formData.get("outputRarity"),
       outputKind: formData.get("outputKind"),
       inputText: formData.get("inputText"),
+      materialsText: formData.get("materialsText"),
       goldCost: formData.get("goldCost"),
     },
     {
@@ -2173,6 +2182,12 @@ export async function createCraftingRecipeAction(formData: FormData) {
     redirectToCampaignError(campaign.slug, "duplicate-recipe-name");
   }
 
+  const materials = parseCraftingMaterials(payload.materialsText);
+
+  if (materials.length === 0) {
+    redirectToCampaignError(campaign.slug, "invalid-crafting-state");
+  }
+
   await prisma.craftingRecipe.create({
     data: {
       campaignId: campaign.id,
@@ -2182,6 +2197,7 @@ export async function createCraftingRecipeAction(formData: FormData) {
       outputRarity: payload.outputRarity,
       outputKind: payload.outputKind,
       inputText: payload.inputText.trim(),
+      materialsText: payload.materialsText.trim(),
       goldCost: payload.goldCost,
       timeText: readOptionalTextField(formData, "timeText"),
       notes: readOptionalTextField(formData, "notes"),
@@ -2285,65 +2301,135 @@ export async function completeCraftingJobAction(formData: FormData) {
     },
     include: {
       recipe: true,
-      character: true,
+      character: {
+        include: {
+          ledgerEntries: {
+            include: {
+              lootItem: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+        },
+      },
     },
   });
 
-  if (!job || !job.recipe || !job.character) {
+  if (!job || !job.recipe || !job.character || job.status !== CraftingJobStatus.IN_PROGRESS) {
     redirectToCampaignError(campaign.slug, "invalid-crafting-state");
   }
 
-  let lootItemId = job.lootItemId;
+  const recipe = job.recipe;
+  const character = job.character;
+  const requirements = parseCraftingMaterials(recipe.materialsText);
+  const holdings = deriveCraftingHoldings(character.ledgerEntries);
+  const materialSummary = requirements.length
+    ? buildCraftingConsumptionPlan(requirements, holdings, "full")
+    : { isMet: true, consumption: [] };
 
-  if (!lootItemId) {
-    const lootItem = await prisma.lootItem.create({
-      data: {
-        campaignId: campaign.id,
-        name: job.recipe.outputName,
-        rarity: job.recipe.outputRarity,
-        kind: job.recipe.outputKind,
-        description: job.recipe.outputDescription,
-        sourceTag: "Crafted item",
-      },
-    });
+  if (!materialSummary.isMet) {
+    redirectToCampaignError(campaign.slug, "insufficient-crafting-materials");
+  }
 
-    lootItemId = lootItem.id;
+  const resolution = resolveCraftingOutcome({
+    level: character.level,
+    rarity: recipe.outputRarity,
+    outputName: recipe.outputName,
+    dieRoll: randomInt(1, 21),
+  });
+  const outcomeKey = resolution.outcome.toLowerCase();
+  const consumptionPlan = buildCraftingConsumptionPlan(
+    requirements,
+    holdings,
+    resolution.outcome === CraftingResolutionOutcome.FAILURE ? "failure" : "full",
+  );
 
-    await prisma.craftingJob.updateMany({
+  if (!consumptionPlan.isMet) {
+    redirectToCampaignError(campaign.slug, "insufficient-crafting-materials");
+  }
+
+  const resolutionText = `Roll ${resolution.dieRoll} + ${resolution.skillBonus} = ${resolution.total} vs DC ${resolution.dc}. ${resolution.resolutionText}`;
+
+  await prisma.$transaction(async (tx) => {
+    let lootItemId = job.lootItemId;
+
+    for (const material of consumptionPlan.consumption) {
+      await tx.inventoryLedgerEntry.create({
+        data: {
+          campaignId: campaign.id,
+          characterId: character.id,
+          lootItemId: material.lootItemId,
+          scope: material.scope,
+          entryType: LedgerEntryType.CRAFTING_INPUT,
+          quantity: -material.quantity,
+          note: `Spent ${material.quantity}x ${material.name} on ${recipe.outputName} (${outcomeKey} result)`,
+        },
+      });
+    }
+
+    if (resolution.outcome !== CraftingResolutionOutcome.FAILURE) {
+      if (!lootItemId) {
+        const lootItem = await tx.lootItem.create({
+          data: {
+            campaignId: campaign.id,
+            name: recipe.outputName,
+            rarity: recipe.outputRarity,
+            kind: recipe.outputKind,
+            description: recipe.outputDescription,
+            sourceTag: "Crafted item",
+          },
+        });
+
+        lootItemId = lootItem.id;
+      }
+
+      if (recipe.goldCost > 0) {
+        await tx.inventoryLedgerEntry.create({
+          data: {
+            campaignId: campaign.id,
+            characterId: character.id,
+            scope: HoldingScope.BANK,
+            entryType: LedgerEntryType.CRAFTING_INPUT,
+            goldDelta: -recipe.goldCost,
+            note: `Spent ${recipe.outputName} crafting costs (${outcomeKey} result)`,
+          },
+        });
+      }
+
+      await tx.inventoryLedgerEntry.create({
+        data: {
+          campaignId: campaign.id,
+          characterId: character.id,
+          lootItemId,
+          scope: payload.scope,
+          entryType: LedgerEntryType.CRAFTING_OUTPUT,
+          quantity: 1,
+          note:
+            resolution.outcome === CraftingResolutionOutcome.MIXED
+              ? `Crafted ${recipe.outputName} with a mixed result`
+              : `Crafted ${recipe.outputName}`,
+        },
+      });
+    }
+
+    await tx.craftingJob.update({
       where: {
         id: job.id,
-        campaignId: campaign.id,
       },
       data: {
         lootItemId,
-      },
-    });
-  }
-
-  if (job.status !== CraftingJobStatus.COMPLETE) {
-    await prisma.craftingJob.updateMany({
-      where: {
-        id: job.id,
-        campaignId: campaign.id,
-      },
-      data: {
         status: CraftingJobStatus.COMPLETE,
+        resolutionOutcome: resolution.outcome,
+        resolutionText,
+        rollDie: resolution.dieRoll,
+        rollTotal: resolution.total,
+        resolvedAt: new Date(),
       },
     });
-
-    await prisma.inventoryLedgerEntry.create({
-      data: {
-        campaignId: campaign.id,
-        characterId: job.character.id,
-        lootItemId,
-        scope: payload.scope,
-        entryType: LedgerEntryType.CRAFTING_OUTPUT,
-        quantity: 1,
-        goldDelta: -job.recipe.goldCost,
-        note: `Crafted ${job.recipe.outputName}`,
-      },
-    });
-  }
+  });
 
   redirectToCampaign(campaign.slug);
 }

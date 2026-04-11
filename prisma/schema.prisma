@@ -126,6 +126,12 @@ enum CraftingJobStatus {
   ARCHIVED
 }
 
+enum CraftingResolutionOutcome {
+  SUCCESS
+  MIXED
+  FAILURE
+}
+
 model Campaign {
   id                String                  @id @default(cuid())
   slug              String                  @unique
@@ -427,6 +433,7 @@ model CraftingRecipe {
   outputRarity     LootRarity
   outputKind       LootKind
   inputText        String
+  materialsText    String                @default("")
   goldCost         Int                   @default(0)
   timeText         String?
   notes            String?
@@ -438,19 +445,24 @@ model CraftingRecipe {
 }
 
 model CraftingJob {
-  id          String            @id @default(cuid())
-  campaignId  String
-  recipeId    String?
-  characterId String?
-  lootItemId  String?
-  status      CraftingJobStatus @default(DRAFT)
-  notes       String?
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
-  campaign    Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  recipe      CraftingRecipe?   @relation(fields: [recipeId], references: [id], onDelete: SetNull)
-  character   Character?        @relation("CraftingJobCharacter", fields: [characterId], references: [id], onDelete: SetNull)
-  lootItem    LootItem?         @relation("CraftingJobLootItem", fields: [lootItemId], references: [id], onDelete: SetNull)
+  id                String                     @id @default(cuid())
+  campaignId        String
+  recipeId          String?
+  characterId       String?
+  lootItemId        String?
+  status            CraftingJobStatus         @default(DRAFT)
+  resolutionOutcome CraftingResolutionOutcome?
+  resolutionText    String?
+  rollDie           Int?
+  rollTotal         Int?
+  resolvedAt        DateTime?
+  notes             String?
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+  campaign          Campaign                   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipe            CraftingRecipe?            @relation(fields: [recipeId], references: [id], onDelete: SetNull)
+  character         Character?                 @relation("CraftingJobCharacter", fields: [characterId], references: [id], onDelete: SetNull)
+  lootItem          LootItem?                  @relation("CraftingJobLootItem", fields: [lootItemId], references: [id], onDelete: SetNull)
 }
 
 model InventoryLedgerEntry {
