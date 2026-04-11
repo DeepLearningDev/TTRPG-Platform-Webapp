@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HoldingScope } from "@prisma/client";
-import { deriveHoldings } from "@/lib/campaign-vault";
+import { deriveHoldings, isMailThreadVisibleToCharacter } from "@/lib/campaign-vault";
 
 describe("deriveHoldings", () => {
   it("totals gold and keeps only positive item balances for a scope", () => {
@@ -64,5 +64,50 @@ describe("deriveHoldings", () => {
         quantity: 2,
       },
     ]);
+  });
+});
+
+describe("isMailThreadVisibleToCharacter", () => {
+  it("shows party and direct-character threads to the logged-in player", () => {
+    expect(
+      isMailThreadVisibleToCharacter(
+        {
+          recipientName: "Party",
+          senderName: "Quartermaster",
+        },
+        {
+          name: "Miri Vale",
+          playerName: "Kaleb",
+        },
+      ),
+    ).toBe(true);
+
+    expect(
+      isMailThreadVisibleToCharacter(
+        {
+          recipientName: "Miri Vale",
+          senderName: "Captain Ori Pell",
+        },
+        {
+          name: "Miri Vale",
+          playerName: "Kaleb",
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it("hides unrelated threads", () => {
+    expect(
+      isMailThreadVisibleToCharacter(
+        {
+          recipientName: "Toren Ash",
+          senderName: "Guild Clerk",
+        },
+        {
+          name: "Miri Vale",
+          playerName: "Kaleb",
+        },
+      ),
+    ).toBe(false);
   });
 });

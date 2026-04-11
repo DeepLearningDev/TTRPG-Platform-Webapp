@@ -6,8 +6,10 @@ import { formatCraftingMaterials, parseCraftingMaterials } from "@/lib/crafting-
 import { formatCopperAsGold, formatEnumLabel } from "@/lib/format";
 import { clearPlayerSession, getPlayerSession } from "@/lib/player-session";
 import {
+  acceptQuestAction,
   logoutBankAction,
   passOnLootPoolItemAction,
+  replyToMailThreadAction,
   rollOnLootPoolItemAction,
 } from "../actions";
 
@@ -15,6 +17,8 @@ type BankAccountPageProps = {
   searchParams: Promise<{
     error?: string;
     loot?: string;
+    quest?: string;
+    mail?: string;
   }>;
 };
 
@@ -23,11 +27,24 @@ const lootActionMessages: Record<string, string> = {
   passed: "You passed on that loot item.",
 };
 
+const questActionMessages: Record<string, string> = {
+  accepted: "You accepted that quest from the party board.",
+  acknowledged: "You acknowledged your assigned quest and moved it into active work.",
+};
+
+const mailActionMessages: Record<string, string> = {
+  sent: "Your reply was posted to that mail thread.",
+};
+
 const lootErrorMessages: Record<string, string> = {
   "invalid-loot-pool-state":
     "That loot item is no longer open for your character.",
   "duplicate-loot-response":
     "You already responded to that loot item.",
+  "invalid-player-quest-state":
+    "That quest is no longer available for your character to accept or acknowledge.",
+  "invalid-player-mail-state":
+    "That mail reply could not be posted because the thread is no longer available to your character.",
 };
 
 export default async function BankAccountPage({ searchParams }: BankAccountPageProps) {
@@ -48,6 +65,8 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
   }
 
   const successMessage = params.loot ? lootActionMessages[params.loot] ?? null : null;
+  const questMessage = params.quest ? questActionMessages[params.quest] ?? null : null;
+  const mailMessage = params.mail ? mailActionMessages[params.mail] ?? null : null;
   const errorMessage = params.error
     ? lootErrorMessages[params.error] ?? "Unable to save that loot response."
     : null;
@@ -73,6 +92,8 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
 
       {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
       {successMessage ? <p className="callout">{successMessage}</p> : null}
+      {questMessage ? <p className="callout">{questMessage}</p> : null}
+      {mailMessage ? <p className="callout">{mailMessage}</p> : null}
 
       <section className="hero">
         <span className="section-kicker">
@@ -278,22 +299,40 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
           <div className="card-stack">
             {account.campaign.quests.length > 0 ? (
               account.campaign.quests.map((quest) => (
-                <div className="item-card" key={quest.id}>
-                  <div className="card-header">
-                    <div>
-                      <div className="value-line">{quest.title}</div>
-                      <div className="muted">
-                        {quest.assignee ? `Assigned to ${quest.assignee.name}` : "Open to the party"}
+                (() => {
+                  const canAccept = quest.status === "OPEN" && !quest.assignee;
+                  const canAcknowledge =
+                    quest.status === "OPEN" && quest.assignee?.id === account.id;
+
+                  return (
+                    <div className="item-card" key={quest.id}>
+                      <div className="card-header">
+                        <div>
+                          <div className="value-line">{quest.title}</div>
+                          <div className="muted">
+                            {quest.assignee ? `Assigned to ${quest.assignee.name}` : "Open to the party"}
+                          </div>
+                        </div>
+                        <span className="tag">{formatEnumLabel(quest.status)}</span>
                       </div>
+                      <p>{quest.objective}</p>
+                      <div className="muted">
+                        Reward: {formatCopperAsGold(quest.rewardGold)}
+                        {quest.rewardText ? ` · ${quest.rewardText}` : ""}
+                      </div>
+                      {canAccept || canAcknowledge ? (
+                        <form action={acceptQuestAction} className="button-row">
+                          <input type="hidden" name="questId" value={quest.id} />
+                          <button className="button-secondary" type="submit">
+                            {canAccept ? "Accept quest" : "Acknowledge quest"}
+                          </button>
+                        </form>
+                      ) : quest.assignee?.id === account.id ? (
+                        <p className="muted">You are the current quest assignee.</p>
+                      ) : null}
                     </div>
-                    <span className="tag">{formatEnumLabel(quest.status)}</span>
-                  </div>
-                  <p>{quest.objective}</p>
-                  <div className="muted">
-                    Reward: {formatCopperAsGold(quest.rewardGold)}
-                    {quest.rewardText ? ` · ${quest.rewardText}` : ""}
-                  </div>
-                </div>
+                  );
+                })()
               ))
             ) : (
               <div className="callout">No active quests are posted right now.</div>
@@ -371,6 +410,22 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                       </div>
                     ))}
                   </div>
+                  <form action={replyToMailThreadAction} className="stack-form">
+                    <input type="hidden" name="threadId" value={thread.id} />
+                    <label className="field-label">
+                      Reply
+                      <textarea
+                        name="body"
+                        placeholder="Send a short in-world response."
+                        required
+                      />
+                    </label>
+                    <div className="button-row">
+                      <button className="button-secondary" type="submit">
+                        Send reply
+                      </button>
+                    </div>
+                  </form>
                 </div>
               ))
             ) : (

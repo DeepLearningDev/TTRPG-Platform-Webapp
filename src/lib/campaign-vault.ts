@@ -391,19 +391,9 @@ export async function getPlayerAccountBySession(input: {
     bankSnapshot: deriveHoldings(character.ledgerEntries, HoldingScope.BANK),
     inventorySnapshot: deriveHoldings(character.ledgerEntries, HoldingScope.INVENTORY),
     lootPools: character.campaign.lootPools,
-    visibleMailThreads: character.campaign.mailThreads.filter((thread) => {
-      const nameKey = character.name.toLowerCase();
-      const playerKey = character.playerName.toLowerCase();
-      const recipient = thread.recipientName.toLowerCase();
-      const sender = thread.senderName.toLowerCase();
-
-      return (
-        recipient.includes("party") ||
-        recipient.includes(nameKey) ||
-        recipient.includes(playerKey) ||
-        sender.includes(nameKey)
-      );
-    }),
+    visibleMailThreads: character.campaign.mailThreads.filter((thread) =>
+      isMailThreadVisibleToCharacter(thread, character),
+    ),
   };
 }
 
@@ -480,4 +470,28 @@ export function parseTagInput(value: FormDataEntryValue | null) {
   return splitTags(String(value ?? ""))
     .slice(0, 8)
     .join(", ");
+}
+
+export function isMailThreadVisibleToCharacter(
+  thread: {
+    recipientName: string;
+    senderName: string;
+  },
+  character: {
+    name: string;
+    playerName: string;
+  },
+) {
+  const nameKey = character.name.toLowerCase();
+  const playerKey = character.playerName.toLowerCase();
+  const recipient = thread.recipientName.toLowerCase();
+  const sender = thread.senderName.toLowerCase();
+
+  return (
+    recipient.includes("party") ||
+    recipient.includes(nameKey) ||
+    recipient.includes(playerKey) ||
+    sender.includes(nameKey) ||
+    sender.includes(playerKey)
+  );
 }

@@ -6,7 +6,9 @@ import {
   LootDistributionMode,
   LootPoolItemStatus,
   LootPoolStatus,
+  MailThreadStatus,
   Prisma,
+  QuestStatus,
 } from "@prisma/client";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -15,6 +17,7 @@ import {
   isLockedOut,
   normalizeCharacterNameKey,
 } from "@/lib/bank-security";
+import { isMailThreadVisibleToCharacter } from "@/lib/campaign-vault";
 import {
   clearPlayerSession,
   getPlayerSession,
@@ -172,15 +175,27 @@ const lootPoolPlayerMutationSchema = z.object({
   lootPoolItemId: z.string().min(1),
 });
 
+const questPlayerMutationSchema = z.object({
+  questId: z.string().min(1),
+});
+
+const mailReplyPlayerMutationSchema = z.object({
+  threadId: z.string().min(1),
+  body: z.string().trim().min(4).max(800),
+});
+
 function redirectToPlayerAccountError(code: string): never {
   redirect(`/bank/account?error=${code}`);
 }
 
-function redirectToPlayerAccountResult(code: string): never {
-  redirect(`/bank/account?loot=${code}`);
+function redirectToPlayerAccountResult(
+  key: "loot" | "quest" | "mail",
+  code: string,
+): never {
+  redirect(`/bank/account?${key}=${code}`);
 }
 
-async function requirePlayerLootContext() {
+async function requirePlayerMutationContext() {
   const session = await getPlayerSession();
 
   if (!session) {
@@ -198,6 +213,8 @@ async function requirePlayerLootContext() {
     select: {
       id: true,
       campaignId: true,
+      name: true,
+      playerName: true,
     },
   });
 
@@ -213,7 +230,7 @@ async function createPlayerLootPoolResponse(input: {
   lootPoolItemId: string;
   response: "ROLLED" | "PASSED";
 }) {
-  const character = await requirePlayerLootContext();
+  const character = await requirePlayerMutationContext();
   const rollTotal = input.response === "ROLLED" ? randomInt(1, 21) : null;
 
   try {
@@ -270,6 +287,7 @@ async function createPlayerLootPoolResponse(input: {
   }
 
   redirectToPlayerAccountResult(
+    "loot",
     input.response === "ROLLED" ? "rolled" : "passed",
   );
 }
@@ -304,4 +322,121 @@ export async function passOnLootPoolItemAction(formData: FormData) {
     lootPoolItemId: payload.lootPoolItemId,
     response: "PASSED",
   });
+}
+
+function appendPlayerQuestNote(existing: string | null, note: string) {
+  return existing ? `${existing}\n${note}` : note;
+}
+
+export async function acceptQuestAction(formData: FormData) {
+  const parsedPayload = questPlayerMutationSchema.safeParse({
+    questId: formData.get("questId"),
+  });
+  const payload = parsedPayload.success ? parsedPayload.data : null;
+
+  if (!payload) {
+    redirectToPlayerAccountError("invalid-player-quest-state");
+  }
+
+  const character = await requirePlayerMutationContext();
+  const quest = await prisma.quest.findFirst({
+    where: {
+      id: payload.questId,
+      campaignId: character.campaignId,
+      status: QuestStatus.OPEN,
+    },
+    select: {
+      id: true,
+      title: true,
+      notes: true,
+      assigneeCharacterId: true,
+    },
+  });
+
+  if (!quest) {
+    redirectToPlayerAccountError("invalid-player-quest-state");
+  }
+
+  const isOpenToParty = !quest.assigneeCharacterId;
+  const isAssignedToPlayer = quest.assigneeCharacterId === character.id;
+
+  if (!isOpenToParty && !isAssignedToPlayer) {
+    redirectToPlayerAccountError("invalid-player-quest-state");
+  }
+
+  const dateLabel = new Date().toISOString().slice(0, 10);
+  const isAcknowledgement = isAssignedToPlayer;
+  const playerNote = isAcknowledgement
+    ? `${dateLabel}: ${character.name} acknowledged this quest from the player hub.`
+    : `${dateLabel}: ${character.name} accepted this quest from the player hub.`;
+
+  await prisma.quest.update({
+    where: {
+      id: quest.id,
+    },
+    data: {
+      assigneeCharacterId: isOpenToParty ? character.id : quest.assigneeCharacterId,
+      status: QuestStatus.ACTIVE,
+      notes: appendPlayerQuestNote(quest.notes, playerNote),
+    },
+  });
+
+  redirectToPlayerAccountResult(
+    "quest",
+    isAcknowledgement ? "acknowledged" : "accepted",
+  );
+}
+
+export async function replyToMailThreadAction(formData: FormData) {
+  const parsedPayload = mailReplyPlayerMutationSchema.safeParse({
+    threadId: formData.get("threadId"),
+    body: formData.get("body"),
+  });
+  const payload = parsedPayload.success ? parsedPayload.data : null;
+
+  if (!payload) {
+    redirectToPlayerAccountError("invalid-player-mail-state");
+  }
+
+  const character = await requirePlayerMutationContext();
+  const thread = await prisma.mailThread.findFirst({
+    where: {
+      id: payload.threadId,
+      campaignId: character.campaignId,
+      status: MailThreadStatus.ACTIVE,
+    },
+    select: {
+      id: true,
+      senderName: true,
+      recipientName: true,
+    },
+  });
+
+  if (!thread || !isMailThreadVisibleToCharacter(thread, character)) {
+    redirectToPlayerAccountError("invalid-player-mail-state");
+  }
+
+  const toName =
+    thread.senderName.toLowerCase() === character.name.toLowerCase()
+      ? thread.recipientName
+      : thread.senderName;
+
+  await prisma.mailThread.update({
+    where: {
+      id: thread.id,
+    },
+    data: {
+      updatedAt: new Date(),
+      messages: {
+        create: {
+          fromName: character.name,
+          toName,
+          body: payload.body,
+          isFromDm: false,
+        },
+      },
+    },
+  });
+
+  redirectToPlayerAccountResult("mail", "sent");
 }
