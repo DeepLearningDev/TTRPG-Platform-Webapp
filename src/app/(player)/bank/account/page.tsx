@@ -5,21 +5,52 @@ import { getPlayerAccountBySession } from "@/lib/campaign-vault";
 import { formatCraftingMaterials, parseCraftingMaterials } from "@/lib/crafting-resolution";
 import { formatCopperAsGold, formatEnumLabel } from "@/lib/format";
 import { clearPlayerSession, getPlayerSession } from "@/lib/player-session";
-import { logoutBankAction } from "../actions";
+import {
+  logoutBankAction,
+  passOnLootPoolItemAction,
+  rollOnLootPoolItemAction,
+} from "../actions";
 
-export default async function BankAccountPage() {
+type BankAccountPageProps = {
+  searchParams: Promise<{
+    error?: string;
+    loot?: string;
+  }>;
+};
+
+const lootActionMessages: Record<string, string> = {
+  rolled: "Your roll was recorded for that loot item.",
+  passed: "You passed on that loot item.",
+};
+
+const lootErrorMessages: Record<string, string> = {
+  "invalid-loot-pool-state":
+    "That loot item is no longer open for your character.",
+  "duplicate-loot-response":
+    "You already responded to that loot item.",
+};
+
+export default async function BankAccountPage({ searchParams }: BankAccountPageProps) {
   const session = await getPlayerSession();
 
   if (!session) {
     redirect("/bank");
   }
 
-  const account = await getPlayerAccountBySession(session);
+  const [account, params] = await Promise.all([
+    getPlayerAccountBySession(session),
+    searchParams,
+  ]);
 
   if (!account) {
     await clearPlayerSession();
     redirect("/bank");
   }
+
+  const successMessage = params.loot ? lootActionMessages[params.loot] ?? null : null;
+  const errorMessage = params.error
+    ? lootErrorMessages[params.error] ?? "Unable to save that loot response."
+    : null;
 
   return (
     <main className="app-shell">
@@ -39,6 +70,9 @@ export default async function BankAccountPage() {
           </form>
         </div>
       </header>
+
+      {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
+      {successMessage ? <p className="callout">{successMessage}</p> : null}
 
       <section className="hero">
         <span className="section-kicker">
@@ -101,6 +135,10 @@ export default async function BankAccountPage() {
                       const myRoll = item.rollEntries.find(
                         (entry) => entry.characterId === account.id,
                       );
+                      const canRespond =
+                        item.status === "UNRESOLVED" &&
+                        item.distributionMode === "ROLL" &&
+                        !myRoll;
 
                       return (
                         <div className="list-item" key={item.id}>
@@ -126,7 +164,33 @@ export default async function BankAccountPage() {
                               Your roll: {myRoll.rollTotal ?? "not rolled"} · {formatEnumLabel(myRoll.status)}
                             </p>
                           ) : null}
+                          {item.status === "UNRESOLVED" && item.rollEntries.length > 0 ? (
+                            <p className="muted">
+                              {item.rollEntries.length} party response(s) recorded so far.
+                            </p>
+                          ) : null}
                           {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
+                          {canRespond ? (
+                            <div className="button-row">
+                              <form action={rollOnLootPoolItemAction}>
+                                <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                <button className="button-secondary" type="submit">
+                                  Roll
+                                </button>
+                              </form>
+                              <form action={passOnLootPoolItemAction}>
+                                <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                <button className="pill-button" type="submit">
+                                  Pass
+                                </button>
+                              </form>
+                            </div>
+                          ) : null}
+                          {myRoll && item.status === "UNRESOLVED" ? (
+                            <p className="muted">
+                              Your response is locked in while the party finishes this item.
+                            </p>
+                          ) : null}
                         </div>
                       );
                     })}
