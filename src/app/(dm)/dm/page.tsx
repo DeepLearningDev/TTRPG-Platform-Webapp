@@ -24,6 +24,7 @@ import {
   formatEnumLabel,
   splitTags,
 } from "@/lib/format";
+import { buildLootPoolDraft } from "@/lib/loot-generation";
 import {
   assignLootPoolItemAction,
   archiveNpcAction,
@@ -62,8 +63,35 @@ type DmPageProps = {
     sync?: string;
     source?: string;
     error?: string;
+    preview?: string;
+    encounterId?: string;
+    title?: string;
+    sourceText?: string;
+    partyLevel?: string;
+    difficulty?: EncounterDifficulty;
+    itemCount?: string;
+    includeMonsterMaterials?: string;
+    notes?: string;
   }>;
 };
+
+function readOptionalSearchText(value?: string) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function readOptionalSearchNumber(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readSearchBoolean(value?: string) {
+  return value === "true" || value === "on" || value === "1";
+}
 
 const dmErrorMessages: Record<string, string> = {
   "invalid-campaign-state":
@@ -136,6 +164,41 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     craftingRecipes,
     craftingJobs,
   } = data;
+  const previewEncounterId = readOptionalSearchText(params.encounterId);
+  const previewEncounter =
+    previewEncounterId
+      ? campaign.encounters.find((encounter) => encounter.id === previewEncounterId) ?? null
+      : null;
+  const defaultLootDifficulty =
+    params.preview === "loot" && params.difficulty
+      ? params.difficulty
+      : EncounterDifficulty.MEDIUM;
+  const lootDraftPreview =
+    params.preview === "loot" &&
+    (!previewEncounterId || previewEncounter)
+      ? buildLootPoolDraft({
+          campaignId: campaign.id,
+          campaignName: campaign.name,
+          candidates: campaign.lootItems,
+          characterLevels: campaign.characters.map((character) => character.level),
+          encounter: previewEncounter,
+          overrides: {
+            title: readOptionalSearchText(params.title),
+            sourceText: readOptionalSearchText(params.sourceText),
+            partyLevel: readOptionalSearchNumber(params.partyLevel),
+            difficulty: defaultLootDifficulty,
+            itemCount: readOptionalSearchNumber(params.itemCount),
+            includeMonsterMaterials: readSearchBoolean(params.includeMonsterMaterials),
+            notes: readOptionalSearchText(params.notes),
+          },
+        })
+      : null;
+  const lootPreviewErrorMessage =
+    params.preview === "loot" && previewEncounterId && !previewEncounter
+      ? "That encounter preview no longer matches this campaign."
+      : lootDraftPreview && lootDraftPreview.items.length === 0
+        ? "No previewable loot items matched that draft."
+        : null;
   const defaultPartyLevel = Math.max(
     1,
     Math.round(
@@ -642,10 +705,12 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           <form action={generateLootPoolAction} className="stack-form">
             <input type="hidden" name="campaignId" value={campaign.id} />
             <input type="hidden" name="campaignSlug" value={campaign.slug} />
+            <input type="hidden" name="campaign" value={campaign.slug} />
+            <input type="hidden" name="preview" value="loot" />
             <div className="subgrid">
               <label className="field-label">
                 Encounter source
-                <select name="encounterId" defaultValue="">
+                <select name="encounterId" defaultValue={previewEncounterId ?? ""}>
                   <option value="">Manual reward event</option>
                   {campaign.encounters.map((encounter) => (
                     <option key={encounter.id} value={encounter.id}>
@@ -657,12 +722,18 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               </label>
               <label className="field-label">
                 Reward title
-                <input name="title" placeholder="Sunken shrine spoils" />
+                <input
+                  defaultValue={params.preview === "loot" ? params.title ?? "" : ""}
+                  name="title"
+                  placeholder="Sunken shrine spoils"
+                />
               </label>
               <label className="field-label">
                 Party level
                 <input
-                  defaultValue={defaultPartyLevel}
+                  defaultValue={
+                    params.preview === "loot" ? params.partyLevel ?? String(defaultPartyLevel) : defaultPartyLevel
+                  }
                   max="20"
                   min="1"
                   name="partyLevel"
@@ -671,7 +742,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               </label>
               <label className="field-label">
                 Difficulty
-                <select name="difficulty" defaultValue={EncounterDifficulty.MEDIUM}>
+                <select name="difficulty" defaultValue={defaultLootDifficulty}>
                   {Object.values(EncounterDifficulty).map((difficulty) => (
                     <option key={difficulty} value={difficulty}>
                       {formatDifficultyLabel(difficulty)}
@@ -683,27 +754,94 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             <div className="subgrid">
               <label className="field-label">
                 Pool note
-                <input name="sourceText" placeholder="Reward chest from the flooded gallery." />
+                <input
+                  defaultValue={params.preview === "loot" ? params.sourceText ?? "" : ""}
+                  name="sourceText"
+                  placeholder="Reward chest from the flooded gallery."
+                />
               </label>
               <label className="field-label">
                 Item count
-                <input defaultValue="2" max="4" min="1" name="itemCount" type="number" />
+                <input
+                  defaultValue={params.preview === "loot" ? params.itemCount ?? "2" : "2"}
+                  max="4"
+                  min="1"
+                  name="itemCount"
+                  type="number"
+                />
               </label>
             </div>
             <label className="field-label">
               <span>Monster material drops</span>
-              <input defaultChecked name="includeMonsterMaterials" type="checkbox" value="true" />
+              <input
+                defaultChecked={
+                  params.preview === "loot"
+                    ? readSearchBoolean(params.includeMonsterMaterials)
+                    : true
+                }
+                name="includeMonsterMaterials"
+                type="checkbox"
+                value="true"
+              />
             </label>
             <label className="field-label">
               Notes
-              <textarea name="notes" placeholder="Why this pool exists or any special handling." />
+              <textarea
+                defaultValue={params.preview === "loot" ? params.notes ?? "" : ""}
+                name="notes"
+                placeholder="Why this pool exists or any special handling."
+              />
             </label>
             <div className="button-row">
+              <button className="pill-button" formAction="/dm" formMethod="get" type="submit">
+                Preview draft
+              </button>
               <button className="button-secondary" type="submit">
                 Generate loot pool
               </button>
+              {params.preview === "loot" ? (
+                <Link className="nav-link" href={`/dm?campaign=${campaign.slug}`}>
+                  Clear preview
+                </Link>
+              ) : null}
             </div>
           </form>
+
+          {lootPreviewErrorMessage ? <p className="error-banner">{lootPreviewErrorMessage}</p> : null}
+          {lootDraftPreview && !lootPreviewErrorMessage ? (
+            <div className="item-card">
+              <div className="card-header">
+                <div>
+                  <span className="section-kicker">Preview Only</span>
+                  <div className="value-line">{lootDraftPreview.title}</div>
+                  <div className="muted">{lootDraftPreview.sourceText}</div>
+                </div>
+                <span className="tag">{lootDraftPreview.distributionMode === "ROLL" ? "Roll Draft" : "Assign Draft"}</span>
+              </div>
+              <p>
+                Party level {lootDraftPreview.partyLevel} · {formatDifficultyLabel(lootDraftPreview.difficulty)} ·{" "}
+                {lootDraftPreview.items.length} item{lootDraftPreview.items.length === 1 ? "" : "s"}
+              </p>
+              {lootDraftPreview.notes ? <p className="muted">{lootDraftPreview.notes}</p> : null}
+              <div className="list-card">
+                {lootDraftPreview.items.map((item, index) => (
+                  <div className="list-item" key={`${item.itemNameSnapshot}-${index}`}>
+                    <div className="card-header">
+                      <strong>{item.itemNameSnapshot}</strong>
+                      <span className="tag">× {item.quantity}</span>
+                    </div>
+                    <p className="muted">
+                      {formatEnumLabel(item.raritySnapshot)} · {formatEnumLabel(item.kindSnapshot)}
+                    </p>
+                    {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
+                  </div>
+                ))}
+              </div>
+              <p className="callout">
+                Preview only. Nothing is saved until you run Generate loot pool.
+              </p>
+            </div>
+          ) : null}
 
           <div className="panel-header">
             <div>

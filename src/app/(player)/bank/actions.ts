@@ -209,16 +209,24 @@ async function requirePlayerMutationContext() {
       campaign: {
         status: CampaignStatus.ACTIVE,
       },
+      bankAccess: {
+        isNot: null,
+      },
     },
     select: {
       id: true,
       campaignId: true,
       name: true,
       playerName: true,
+      bankAccess: {
+        select: {
+          id: true,
+        },
+      },
     },
   });
 
-  if (!character) {
+  if (!character?.bankAccess) {
     await clearPlayerSession();
     redirect("/bank");
   }

@@ -110,4 +110,19 @@ describe("isMailThreadVisibleToCharacter", () => {
       ),
     ).toBe(false);
   });
+
+  it("does not expose unrelated threads through substring name matches", () => {
+    expect(
+      isMailThreadVisibleToCharacter(
+        {
+          recipientName: "Miri",
+          senderName: "Quartermaster",
+        },
+        {
+          name: "Miri Vale",
+          playerName: "Kaleb",
+        },
+      ),
+    ).toBe(false);
+  });
 });

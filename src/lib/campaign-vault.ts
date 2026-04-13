@@ -269,6 +269,7 @@ export async function getPlayerAccountBySession(input: {
       },
     },
     include: {
+      bankAccess: true,
       campaign: {
         include: {
           quests: {
@@ -386,6 +387,10 @@ export async function getPlayerAccountBySession(input: {
     return null;
   }
 
+  if (!character.bankAccess) {
+    return null;
+  }
+
   return {
     ...character,
     bankSnapshot: deriveHoldings(character.ledgerEntries, HoldingScope.BANK),
@@ -416,6 +421,10 @@ export async function authenticateBankAccess(input: {
       campaign: true,
     },
   });
+}
+
+function normalizeParticipantName(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 export function deriveHoldings(
@@ -482,16 +491,16 @@ export function isMailThreadVisibleToCharacter(
     playerName: string;
   },
 ) {
-  const nameKey = character.name.toLowerCase();
-  const playerKey = character.playerName.toLowerCase();
-  const recipient = thread.recipientName.toLowerCase();
-  const sender = thread.senderName.toLowerCase();
+  const nameKey = normalizeParticipantName(character.name);
+  const playerKey = normalizeParticipantName(character.playerName);
+  const recipient = normalizeParticipantName(thread.recipientName);
+  const sender = normalizeParticipantName(thread.senderName);
 
   return (
-    recipient.includes("party") ||
-    recipient.includes(nameKey) ||
-    recipient.includes(playerKey) ||
-    sender.includes(nameKey) ||
-    sender.includes(playerKey)
+    recipient === "party" ||
+    recipient === nameKey ||
+    recipient === playerKey ||
+    sender === nameKey ||
+    sender === playerKey
   );
 }
