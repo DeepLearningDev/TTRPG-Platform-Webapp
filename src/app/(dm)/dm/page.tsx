@@ -34,6 +34,7 @@ import {
   formatLootAuditDate,
   formatLootAuditDetail,
   formatLootAuditHeadline,
+  getLootAuditSource,
   getRecentLootAwardEntries,
 } from "@/lib/loot-audit";
 import {
@@ -1185,15 +1186,27 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           <div className="list-card">
             {recentLootAwards.map((entry) => (
               <div className="list-item" key={entry.id}>
+                {(() => {
+                  const source = getLootAuditSource(entry);
+
+                  return (
+                    <>
                 <div className="card-header">
                   <strong>{formatLootAuditHeadline(entry)}</strong>
                   <span className="tag">{formatLootAuditDate(entry.createdAt)}</span>
+                </div>
+                <div className="tag-row">
+                  <span className="tag">{source.label}</span>
+                  {source.detail ? <span className="tag">{source.detail}</span> : null}
                 </div>
                 <div className="muted">
                   {formatLootAuditDetail(entry)}
                   {entry.goldDelta ? ` · ${formatCopperAsGold(entry.goldDelta)}` : ""}
                 </div>
                 <p>{entry.note}</p>
+                    </>
+                  );
+                })()}
               </div>
             ))}
           </div>

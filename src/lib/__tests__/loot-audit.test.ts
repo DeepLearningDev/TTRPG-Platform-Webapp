@@ -3,6 +3,7 @@ import {
   formatLootAuditDate,
   formatLootAuditDetail,
   formatLootAuditHeadline,
+  getLootAuditSource,
   getRecentLootAwardEntries,
 } from "@/lib/loot-audit";
 
@@ -14,7 +15,7 @@ describe("loot audit helpers", () => {
     entryType: "AWARD",
     quantity: 1,
     goldDelta: 0,
-    note: "Approved Miri's claim and sent item to Bank.",
+    note: "Approved Miri Vale's claim and sent item to Bank.",
     lootItem: {
       name: "Sunforged Band",
     },
@@ -43,5 +44,22 @@ describe("loot audit helpers", () => {
 
   it("formats a readable date label", () => {
     expect(formatLootAuditDate(awardEntry.createdAt)).toContain("Apr");
+  });
+
+  it("classifies claim approvals and roll awards", () => {
+    expect(getLootAuditSource(awardEntry)).toEqual({
+      label: "Claim approved",
+      detail: "Miri Vale",
+    });
+
+    expect(
+      getLootAuditSource({
+        ...awardEntry,
+        note: "Sunken Shrine Spoils: Roll-off: Miri Vale 18, Toren Ash 12. Winner: Miri Vale.",
+      }),
+    ).toEqual({
+      label: "Party roll",
+      detail: "Miri Vale",
+    });
   });
 });
