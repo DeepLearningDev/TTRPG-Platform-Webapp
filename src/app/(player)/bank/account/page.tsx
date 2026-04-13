@@ -12,9 +12,11 @@ import { clearPlayerSession, getPlayerSession } from "@/lib/player-session";
 import {
   acceptQuestAction,
   logoutBankAction,
+  markLootClaimInterestAction,
   passOnLootPoolItemAction,
   replyToMailThreadAction,
   rollOnLootPoolItemAction,
+  withdrawLootClaimInterestAction,
 } from "../actions";
 
 type BankAccountPageProps = {
@@ -29,6 +31,8 @@ type BankAccountPageProps = {
 const lootActionMessages: Record<string, string> = {
   rolled: "Your roll was recorded for that loot item.",
   passed: "You passed on that loot item.",
+  interested: "Your interest was recorded for that banked item.",
+  withdrawn: "Your interest was removed from that banked item.",
 };
 
 const questActionMessages: Record<string, string> = {
@@ -78,6 +82,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
     (summary, pool) => {
       const poolSummary = summarizePlayerLootPool({
         accountId: account.id,
+        actorName: account.name,
         items: pool.items,
       });
 
@@ -174,6 +179,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
               account.lootPools.map((pool) => {
                 const poolSummary = summarizePlayerLootPool({
                   accountId: account.id,
+                  actorName: account.name,
                   items: pool.items,
                 });
 
@@ -211,10 +217,16 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                         {poolSummary.banked} banked for later
                       </span>
                     ) : null}
+                    {poolSummary.claimInterest > 0 ? (
+                      <span className="tag">
+                        {poolSummary.claimInterest} marked by you
+                      </span>
+                    ) : null}
                     {poolSummary.actionNeeded === 0 &&
                     poolSummary.awaitingResolution === 0 &&
                     poolSummary.assignedToYou === 0 &&
-                    poolSummary.banked === 0 ? (
+                    poolSummary.banked === 0 &&
+                    poolSummary.claimInterest === 0 ? (
                       <span className="tag">No open actions in this pool</span>
                     ) : null}
                   </div>
@@ -222,6 +234,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                     {pool.items.map((item) => {
                       const progress = getPlayerLootItemProgress({
                         accountId: account.id,
+                        actorName: account.name,
                         item,
                       });
                       const myRoll = progress.myRoll;
@@ -257,6 +270,25 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                             </p>
                           ) : null}
                           {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
+                          {progress.key === "banked" ? (
+                            <div className="button-row">
+                              {progress.hasClaimInterest ? (
+                                <form action={withdrawLootClaimInterestAction}>
+                                  <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                  <button className="pill-button" type="submit">
+                                    Withdraw interest
+                                  </button>
+                                </form>
+                              ) : (
+                                <form action={markLootClaimInterestAction}>
+                                  <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                  <button className="button-secondary" type="submit">
+                                    Mark interest
+                                  </button>
+                                </form>
+                              )}
+                            </div>
+                          ) : null}
                           {canRespond ? (
                             <div className="button-row">
                               <form action={rollOnLootPoolItemAction}>

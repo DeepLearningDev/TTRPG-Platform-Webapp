@@ -24,6 +24,8 @@ export type PlayerLootItemProgress = {
   headline: string;
   detail: string;
   myRoll: PlayerLootRollEntry | null;
+  claimInterestNames: string[];
+  hasClaimInterest: boolean;
 };
 
 export type PlayerLootPoolProgress = {
@@ -31,15 +33,85 @@ export type PlayerLootPoolProgress = {
   awaitingResolution: number;
   assignedToYou: number;
   banked: number;
+  claimInterest: number;
 };
+
+function normalizeClaimName(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export function parseLootClaimInterestNames(value: string | null | undefined) {
+  if (!value) {
+    return [];
+  }
+
+  const prefix = "claim interest:";
+  const normalized = value.trim();
+
+  if (!normalized.toLowerCase().startsWith(prefix)) {
+    return [];
+  }
+
+  const body = normalized.slice(prefix.length).trim().replace(/\.$/, "");
+
+  if (!body) {
+    return [];
+  }
+
+  const deduped = new Map<string, string>();
+
+  for (const name of body.split(",").map((entry) => entry.trim()).filter(Boolean)) {
+    const key = normalizeClaimName(name);
+
+    if (!key || deduped.has(key)) {
+      continue;
+    }
+
+    deduped.set(key, name);
+  }
+
+  return Array.from(deduped.values());
+}
+
+export function formatLootClaimInterestMetadata(names: string[]) {
+  const uniqueNames = parseLootClaimInterestNames(`Claim interest: ${names.join(", ")}`);
+
+  if (uniqueNames.length === 0) {
+    return null;
+  }
+
+  return `Claim interest: ${uniqueNames.join(", ")}.`;
+}
+
+export function toggleLootClaimInterest(input: {
+  metadata: string | null | undefined;
+  actorName: string;
+  interested: boolean;
+}) {
+  const current = parseLootClaimInterestNames(input.metadata);
+  const actorKey = normalizeClaimName(input.actorName);
+  const next = input.interested
+    ? current.some((name) => normalizeClaimName(name) === actorKey)
+      ? current
+      : [...current, input.actorName.trim()]
+    : current.filter((name) => normalizeClaimName(name) !== actorKey);
+
+  return formatLootClaimInterestMetadata(next);
+}
 
 export function getPlayerLootItemProgress(input: {
   accountId: string;
+  actorName?: string;
   item: PlayerLootPoolItem;
 }): PlayerLootItemProgress {
   const myRoll =
     input.item.rollEntries.find((entry) => entry.characterId === input.accountId) ?? null;
   const awardedToYou = input.item.awardedCharacter?.id === input.accountId;
+  const claimInterestNames = parseLootClaimInterestNames(input.item.resolutionMetadata);
+  const actorName = input.actorName?.trim();
+  const hasClaimInterest = actorName
+    ? claimInterestNames.some((name) => normalizeClaimName(name) === normalizeClaimName(actorName))
+    : false;
 
   if (
     input.item.status === "UNRESOLVED" &&
@@ -51,6 +123,8 @@ export function getPlayerLootItemProgress(input: {
       headline: "Action needed",
       detail: "Roll or pass before the DM closes this item.",
       myRoll: null,
+      claimInterestNames,
+      hasClaimInterest,
     };
   }
 
@@ -60,6 +134,8 @@ export function getPlayerLootItemProgress(input: {
       headline: "Awaiting party resolution",
       detail: `Your response is locked in. ${input.item.rollEntries.length} party response(s) recorded so far.`,
       myRoll,
+      claimInterestNames,
+      hasClaimInterest,
     };
   }
 
@@ -69,6 +145,8 @@ export function getPlayerLootItemProgress(input: {
       headline: "Assigned to you",
       detail: "Check your bank or inventory ledger for the final destination.",
       myRoll,
+      claimInterestNames,
+      hasClaimInterest,
     };
   }
 
@@ -78,15 +156,24 @@ export function getPlayerLootItemProgress(input: {
       headline: `Assigned to ${input.item.awardedCharacter.name}`,
       detail: "This item has already left the shared pool.",
       myRoll,
+      claimInterestNames,
+      hasClaimInterest,
     };
   }
 
   if (input.item.status === "BANKED") {
+    const detail =
+      claimInterestNames.length > 0
+        ? `Interested players: ${claimInterestNames.join(", ")}.`
+        : "No party member has marked interest yet.";
+
     return {
       key: "banked",
       headline: "Banked for later",
-      detail: "This item is parked for later party distribution.",
+      detail,
       myRoll,
+      claimInterestNames,
+      hasClaimInterest,
     };
   }
 
@@ -96,6 +183,8 @@ export function getPlayerLootItemProgress(input: {
       headline: "Still unresolved",
       detail: "The party or DM has not resolved this item yet.",
       myRoll,
+      claimInterestNames,
+      hasClaimInterest,
     };
   }
 
@@ -104,17 +193,21 @@ export function getPlayerLootItemProgress(input: {
     headline: "Resolved",
     detail: input.item.resolutionMetadata?.trim() || "This item is no longer open.",
     myRoll,
+    claimInterestNames,
+    hasClaimInterest,
   };
 }
 
 export function summarizePlayerLootPool(input: {
   accountId: string;
+  actorName?: string;
   items: PlayerLootPoolItem[];
 }): PlayerLootPoolProgress {
   return input.items.reduce<PlayerLootPoolProgress>(
     (summary, item) => {
       const progress = getPlayerLootItemProgress({
         accountId: input.accountId,
+        actorName: input.actorName,
         item,
       });
 
@@ -128,6 +221,10 @@ export function summarizePlayerLootPool(input: {
         summary.banked += 1;
       }
 
+      if (progress.hasClaimInterest) {
+        summary.claimInterest += 1;
+      }
+
       return summary;
     },
     {
@@ -135,6 +232,7 @@ export function summarizePlayerLootPool(input: {
       awaitingResolution: 0,
       assignedToYou: 0,
       banked: 0,
+      claimInterest: 0,
     },
   );
 }
