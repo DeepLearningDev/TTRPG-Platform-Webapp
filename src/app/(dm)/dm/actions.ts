@@ -46,6 +46,7 @@ import {
   runPartyLootRoll,
 } from "@/lib/loot-generation";
 import { formatHoldingScopeLabel } from "@/lib/format";
+import { setLootClaimReservation } from "@/lib/loot-progress";
 import { hashPin } from "@/lib/pin";
 import { prisma } from "@/lib/prisma";
 
@@ -1421,6 +1422,83 @@ export async function bankLootPoolItemAction(formData: FormData) {
   nextFormData.set("status", LootPoolItemStatus.BANKED);
 
   return deferLootPoolItemAction(nextFormData);
+}
+
+export async function reserveLootPoolItemAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    lootPoolItemMutationSchema.extend({
+      characterId: z.string().optional(),
+    }),
+    {
+      campaignSlug: formData.get("campaignSlug"),
+      campaignId: formData.get("campaignId") || undefined,
+      lootPoolItemId: formData.get("lootPoolItemId"),
+      characterId: readOptionalTextField(formData, "characterId") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-pool-state",
+    },
+  );
+
+  const { campaign, lootPoolItem } = await resolveLootPoolItemMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+    lootPoolItemId: payload.lootPoolItemId,
+  });
+
+  if (
+    lootPoolItem.status !== LootPoolItemStatus.BANKED ||
+    lootPoolItem.distributionMode !== LootDistributionMode.BANK
+  ) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const character = payload.characterId
+    ? await prisma.character.findFirst({
+        where: {
+          id: payload.characterId,
+          campaignId: campaign.id,
+        },
+        select: {
+          id: true,
+          name: true,
+        },
+      })
+    : null;
+
+  if (payload.characterId && !character) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const updated = await prisma.lootPoolItem.updateMany({
+    where: {
+      id: lootPoolItem.id,
+      lootPoolId: lootPoolItem.lootPool.id,
+      status: LootPoolItemStatus.BANKED,
+      distributionMode: LootDistributionMode.BANK,
+      awardedCharacterId: null,
+    },
+    data: {
+      resolutionMetadata: setLootClaimReservation({
+        metadata: lootPoolItem.resolutionMetadata,
+        reservedForName: character?.name ?? null,
+      }),
+      resolutionNote: character
+        ? `Reserved for ${character.name} pending final delivery.`
+        : "Reservation cleared.",
+    },
+  });
+
+  if (updated.count === 0) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  revalidatePath("/bank/account");
+  redirectToCampaign(campaign.slug);
 }
 
 export async function finalizeLootPoolAction(formData: FormData) {

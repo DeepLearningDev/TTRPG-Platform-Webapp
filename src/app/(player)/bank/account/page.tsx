@@ -94,6 +94,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
 
       summary.actionNeeded += poolSummary.actionNeeded;
       summary.awaitingResolution += poolSummary.awaitingResolution;
+      summary.reservedForYou += poolSummary.reservedForYou;
       summary.assignedToYou += poolSummary.assignedToYou;
       summary.banked += poolSummary.banked;
 
@@ -102,6 +103,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
     {
       actionNeeded: 0,
       awaitingResolution: 0,
+      reservedForYou: 0,
       assignedToYou: 0,
       banked: 0,
     },
@@ -165,6 +167,10 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
           <div className="metric-value">{overallLootProgress.actionNeeded}</div>
         </article>
         <article className="metric-card">
+          <span className="metric-label">Reserved for you</span>
+          <div className="metric-value">{overallLootProgress.reservedForYou}</div>
+        </article>
+        <article className="metric-card">
           <span className="metric-label">Assigned to you</span>
           <div className="metric-value">{overallLootProgress.assignedToYou}</div>
         </article>
@@ -214,6 +220,11 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                         {poolSummary.awaitingResolution} awaiting resolution
                       </span>
                     ) : null}
+                    {poolSummary.reservedForYou > 0 ? (
+                      <span className="tag">
+                        {poolSummary.reservedForYou} reserved for you
+                      </span>
+                    ) : null}
                     {poolSummary.assignedToYou > 0 ? (
                       <span className="tag">
                         {poolSummary.assignedToYou} assigned to you
@@ -231,6 +242,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                     ) : null}
                     {poolSummary.actionNeeded === 0 &&
                     poolSummary.awaitingResolution === 0 &&
+                    poolSummary.reservedForYou === 0 &&
                     poolSummary.assignedToYou === 0 &&
                     poolSummary.banked === 0 &&
                     poolSummary.claimInterest === 0 ? (
@@ -277,7 +289,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                             </p>
                           ) : null}
                           {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
-                          {progress.key === "banked" ? (
+                          {progress.key === "banked" && !progress.reservedForName ? (
                             <div className="button-row">
                               {progress.hasClaimInterest ? (
                                 <form action={withdrawLootClaimInterestAction}>

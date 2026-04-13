@@ -28,6 +28,7 @@ import {
 import { buildLootPoolDraft } from "@/lib/loot-generation";
 import {
   parseLootClaimInterestNames,
+  parseLootReservedCharacterName,
   prioritizeInterestedCharacters,
 } from "@/lib/loot-progress";
 import {
@@ -60,6 +61,7 @@ import {
   recordStorefrontSaleAction,
   logoutDmAction,
   replyMailThreadAction,
+  reserveLootPoolItemAction,
   rollLootPoolItemAction,
   syncCompendiumAction,
   updateCharacterAction,
@@ -888,13 +890,23 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                       <div className="list-item" key={item.id}>
                         {(() => {
                           const claimInterestNames = parseLootClaimInterestNames(item.resolutionMetadata);
+                          const reservedCharacterName = parseLootReservedCharacterName(item.resolutionMetadata);
+                          const reservedCharacter =
+                            reservedCharacterName
+                              ? partySummaries.find(
+                                  (character) =>
+                                    character.name.toLowerCase() === reservedCharacterName.toLowerCase(),
+                                ) ?? null
+                              : null;
                           const { interestedCharacters, orderedCharacters: assignmentOptions } =
                             prioritizeInterestedCharacters({
                               names: claimInterestNames,
                               characters: partySummaries,
                             });
                           const defaultAssigneeId =
-                            interestedCharacters[0]?.id ?? partySummaries[0]?.id;
+                            reservedCharacter?.id ??
+                            interestedCharacters[0]?.id ??
+                            partySummaries[0]?.id;
 
                           return (
                             <>
@@ -924,50 +936,92 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                                 Interested: {name}
                               </span>
                             ))}
+                            {reservedCharacterName ? (
+                              <span className="tag">Reserved: {reservedCharacterName}</span>
+                            ) : null}
+                          </div>
+                        ) : reservedCharacterName ? (
+                          <div className="tag-row">
+                            <span className="tag">Reserved: {reservedCharacterName}</span>
                           </div>
                         ) : null}
-                        {item.status === "BANKED" && interestedCharacters.length > 0 ? (
+                        {item.status === "BANKED" &&
+                        (assignmentOptions.length > 0 || reservedCharacterName) ? (
                           <div className="card-stack">
-                            {interestedCharacters.map((character) => (
-                              <div className="list-card" key={character.id}>
+                              <div className="list-card">
                                 <div className="card-header">
-                                  <strong>{character.name}</strong>
-                                  <span className="tag">Claim shortcut</span>
+                                  <strong>
+                                    {reservedCharacterName
+                                      ? `Reserved for ${reservedCharacterName}`
+                                      : "Reserve claim"}
+                                  </strong>
+                                  <span className="tag">
+                                    {reservedCharacterName ? "Reservation active" : "Optional hold"}
+                                  </span>
                                 </div>
-                                <div className="button-row">
-                                  <form action={assignLootPoolItemAction}>
-                                    <input type="hidden" name="campaignId" value={campaign.id} />
-                                    <input type="hidden" name="campaignSlug" value={campaign.slug} />
-                                    <input type="hidden" name="lootPoolItemId" value={item.id} />
-                                    <input type="hidden" name="characterId" value={character.id} />
-                                    <input type="hidden" name="scope" value={HoldingScope.BANK} />
-                                    <input
-                                      type="hidden"
-                                      name="note"
-                                      value={`Approved ${character.name}'s claim and sent item to Bank.`}
-                                    />
+                                <form action={reserveLootPoolItemAction} className="stack-form">
+                                  <input type="hidden" name="campaignId" value={campaign.id} />
+                                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                                  <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                  <label className="field-label">
+                                    Reserve for
+                                    <select
+                                      name="characterId"
+                                      defaultValue={reservedCharacter?.id ?? defaultAssigneeId}
+                                    >
+                                      {assignmentOptions.map((character) => (
+                                        <option key={character.id} value={character.id}>
+                                          {character.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  <div className="button-row">
                                     <button className="button-secondary" type="submit">
-                                      Approve to bank
+                                      Reserve item
                                     </button>
-                                  </form>
-                                  <form action={assignLootPoolItemAction}>
-                                    <input type="hidden" name="campaignId" value={campaign.id} />
-                                    <input type="hidden" name="campaignSlug" value={campaign.slug} />
-                                    <input type="hidden" name="lootPoolItemId" value={item.id} />
-                                    <input type="hidden" name="characterId" value={character.id} />
-                                    <input type="hidden" name="scope" value={HoldingScope.INVENTORY} />
-                                    <input
-                                      type="hidden"
-                                      name="note"
-                                      value={`Approved ${character.name}'s claim and sent item to Inventory.`}
-                                    />
-                                    <button className="pill-button" type="submit">
-                                      Approve to inventory
-                                    </button>
-                                  </form>
-                                </div>
+                                    {reservedCharacterName ? (
+                                      <button className="pill-button" name="characterId" value="" type="submit">
+                                        Clear reservation
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                </form>
+                                {reservedCharacter ? (
+                                  <div className="button-row">
+                                    <form action={assignLootPoolItemAction}>
+                                      <input type="hidden" name="campaignId" value={campaign.id} />
+                                      <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                                      <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                      <input type="hidden" name="characterId" value={reservedCharacter.id} />
+                                      <input type="hidden" name="scope" value={HoldingScope.BANK} />
+                                      <input
+                                        type="hidden"
+                                        name="note"
+                                        value={`Approved ${reservedCharacter.name}'s claim and sent item to Bank.`}
+                                      />
+                                      <button className="button-secondary" type="submit">
+                                        Approve to bank
+                                      </button>
+                                    </form>
+                                    <form action={assignLootPoolItemAction}>
+                                      <input type="hidden" name="campaignId" value={campaign.id} />
+                                      <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                                      <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                      <input type="hidden" name="characterId" value={reservedCharacter.id} />
+                                      <input type="hidden" name="scope" value={HoldingScope.INVENTORY} />
+                                      <input
+                                        type="hidden"
+                                        name="note"
+                                        value={`Approved ${reservedCharacter.name}'s claim and sent item to Inventory.`}
+                                      />
+                                      <button className="pill-button" type="submit">
+                                        Approve to inventory
+                                      </button>
+                                    </form>
+                                  </div>
+                                ) : null}
                               </div>
-                            ))}
                           </div>
                         ) : null}
                         {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}

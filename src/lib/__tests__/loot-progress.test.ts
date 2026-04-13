@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatLootClaimStateMetadata,
   formatLootClaimInterestMetadata,
   getPlayerLootItemProgress,
   parseLootClaimInterestNames,
+  parseLootReservedCharacterName,
   prioritizeInterestedCharacters,
+  setLootClaimReservation,
   summarizePlayerLootPool,
   toggleLootClaimInterest,
 } from "@/lib/loot-progress";
@@ -83,6 +86,24 @@ describe("getPlayerLootItemProgress", () => {
     expect(progress.hasClaimInterest).toBe(true);
     expect(progress.claimInterestNames).toEqual(["Miri Vale", "Toren Ash"]);
   });
+
+  it("marks reserved banked items for the logged-in player", () => {
+    const progress = getPlayerLootItemProgress({
+      accountId: "char-1",
+      actorName: "Miri Vale",
+      item: {
+        status: "BANKED",
+        distributionMode: "BANK",
+        awardedCharacter: null,
+        resolutionMetadata: "Reserved for: Miri Vale. Claim interest: Miri Vale, Toren Ash.",
+        rollEntries: [],
+      },
+    });
+
+    expect(progress.key).toBe("reserved-for-you");
+    expect(progress.reservedForName).toBe("Miri Vale");
+    expect(progress.headline).toBe("Reserved for you");
+  });
 });
 
 describe("summarizePlayerLootPool", () => {
@@ -125,7 +146,7 @@ describe("summarizePlayerLootPool", () => {
           status: "BANKED",
           distributionMode: "BANK",
           awardedCharacter: null,
-          resolutionMetadata: "Claim interest: Miri Vale.",
+          resolutionMetadata: "Reserved for: Miri Vale. Claim interest: Miri Vale.",
           rollEntries: [],
         },
       ],
@@ -134,8 +155,9 @@ describe("summarizePlayerLootPool", () => {
     expect(summary).toEqual({
       actionNeeded: 1,
       awaitingResolution: 1,
+      reservedForYou: 1,
       assignedToYou: 1,
-      banked: 1,
+      banked: 0,
       claimInterest: 1,
     });
   });
@@ -149,6 +171,17 @@ describe("claim interest metadata helpers", () => {
     expect(formatLootClaimInterestMetadata(["Miri Vale", "Toren Ash"])).toBe(
       "Claim interest: Miri Vale, Toren Ash.",
     );
+    expect(
+      formatLootClaimStateMetadata({
+        reservedForName: "Miri Vale",
+        claimInterestNames: ["Miri Vale", "Toren Ash"],
+      }),
+    ).toBe("Reserved for: Miri Vale. Claim interest: Miri Vale, Toren Ash.");
+    expect(
+      parseLootReservedCharacterName(
+        "Reserved for: Miri Vale. Claim interest: Miri Vale, Toren Ash.",
+      ),
+    ).toBe("Miri Vale");
   });
 
   it("adds and removes claim interest without duplicating names", () => {
@@ -167,6 +200,30 @@ describe("claim interest metadata helpers", () => {
         interested: false,
       }),
     ).toBe("Claim interest: Toren Ash.");
+
+    expect(
+      toggleLootClaimInterest({
+        metadata: "Reserved for: Sella Drift. Claim interest: Toren Ash.",
+        actorName: "Miri Vale",
+        interested: true,
+      }),
+    ).toBe("Reserved for: Sella Drift. Claim interest: Toren Ash, Miri Vale.");
+  });
+
+  it("adds and clears reservations without losing interested names", () => {
+    expect(
+      setLootClaimReservation({
+        metadata: "Claim interest: Toren Ash, Miri Vale.",
+        reservedForName: "Miri Vale",
+      }),
+    ).toBe("Reserved for: Miri Vale. Claim interest: Toren Ash, Miri Vale.");
+
+    expect(
+      setLootClaimReservation({
+        metadata: "Reserved for: Miri Vale. Claim interest: Toren Ash, Miri Vale.",
+        reservedForName: null,
+      }),
+    ).toBe("Claim interest: Toren Ash, Miri Vale.");
   });
 
   it("prioritizes interested characters ahead of the rest of the party", () => {
