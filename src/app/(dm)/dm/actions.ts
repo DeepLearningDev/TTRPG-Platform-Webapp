@@ -45,6 +45,7 @@ import {
   buildLootPoolDraft,
   runPartyLootRoll,
 } from "@/lib/loot-generation";
+import { formatHoldingScopeLabel } from "@/lib/format";
 import { hashPin } from "@/lib/pin";
 import { prisma } from "@/lib/prisma";
 
@@ -67,6 +68,13 @@ type CampaignMutationContext = {
   status: CampaignStatus;
   name: string;
 };
+
+function buildLootDeliveryMetadata(input: {
+  scope: HoldingScope;
+  baseDetail: string;
+}) {
+  return `${input.baseDetail} Sent to ${formatHoldingScopeLabel(input.scope)}.`;
+}
 
 function redirectToCampaign(slug: string): never {
   revalidatePath("/dm");
@@ -1145,7 +1153,10 @@ export async function assignLootPoolItemAction(formData: FormData) {
         awardedCharacterId: character.id,
         resolutionScope: payload.scope,
         resolutionNote: note,
-        resolutionMetadata: `Assigned directly to ${character.name}.`,
+        resolutionMetadata: buildLootDeliveryMetadata({
+          scope: payload.scope,
+          baseDetail: `Assigned directly to ${character.name}.`,
+        }),
         resolvedAt,
       },
     });
@@ -1263,7 +1274,10 @@ export async function rollLootPoolItemAction(formData: FormData) {
         awardedCharacterId: rollResult.winner.id,
         resolutionScope: payload.scope,
         resolutionNote: note,
-        resolutionMetadata: rollResult.summary,
+        resolutionMetadata: buildLootDeliveryMetadata({
+          scope: payload.scope,
+          baseDetail: rollResult.summary,
+        }),
         resolvedAt,
       },
     });

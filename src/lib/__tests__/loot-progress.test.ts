@@ -56,12 +56,13 @@ describe("getPlayerLootItemProgress", () => {
           id: "char-1",
           name: "Miri Vale",
         },
-        resolutionMetadata: "Winner: Miri Vale.",
+        resolutionMetadata: "Winner: Miri Vale. Sent to Bank.",
         rollEntries: [],
       },
     });
 
     expect(progress.key).toBe("assigned-to-you");
+    expect(progress.detail).toBe("Winner: Miri Vale. Sent to Bank.");
   });
 
   it("shows claim interest on banked items", () => {

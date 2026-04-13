@@ -32,3 +32,7 @@ export function formatEnumLabel(value: string) {
     .map((segment) => segment.replace(/^\w/, (letter) => letter.toUpperCase()))
     .join(" ");
 }
+
+export function formatHoldingScopeLabel(value: string) {
+  return value === "BANK" ? "Bank" : value === "INVENTORY" ? "Inventory" : formatEnumLabel(value);
+}

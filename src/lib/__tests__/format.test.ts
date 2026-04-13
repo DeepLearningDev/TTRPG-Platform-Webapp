@@ -3,6 +3,7 @@ import {
   formatCopperAsGold,
   formatDifficultyLabel,
   formatEnumLabel,
+  formatHoldingScopeLabel,
   splitTags,
 } from "@/lib/format";
 
@@ -37,5 +38,10 @@ describe("enum formatting helpers", () => {
 
   it("formats underscore enums", () => {
     expect(formatEnumLabel("VERY_RARE")).toBe("Very Rare");
+  });
+
+  it("formats holding scopes for user-facing copy", () => {
+    expect(formatHoldingScopeLabel("BANK")).toBe("Bank");
+    expect(formatHoldingScopeLabel("INVENTORY")).toBe("Inventory");
   });
 });

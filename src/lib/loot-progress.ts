@@ -143,7 +143,9 @@ export function getPlayerLootItemProgress(input: {
     return {
       key: "assigned-to-you",
       headline: "Assigned to you",
-      detail: "Check your bank or inventory ledger for the final destination.",
+      detail:
+        input.item.resolutionMetadata?.trim() ||
+        "Check your bank or inventory ledger for the final destination.",
       myRoll,
       claimInterestNames,
       hasClaimInterest,
@@ -154,7 +156,9 @@ export function getPlayerLootItemProgress(input: {
     return {
       key: "assigned-to-other",
       headline: `Assigned to ${input.item.awardedCharacter.name}`,
-      detail: "This item has already left the shared pool.",
+      detail:
+        input.item.resolutionMetadata?.trim() ||
+        "This item has already left the shared pool.",
       myRoll,
       claimInterestNames,
       hasClaimInterest,

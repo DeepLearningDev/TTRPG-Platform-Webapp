@@ -22,9 +22,11 @@ import {
   formatCopperAsGold,
   formatDifficultyLabel,
   formatEnumLabel,
+  formatHoldingScopeLabel,
   splitTags,
 } from "@/lib/format";
 import { buildLootPoolDraft } from "@/lib/loot-generation";
+import { parseLootClaimInterestNames } from "@/lib/loot-progress";
 import {
   assignLootPoolItemAction,
   archiveNpcAction,
@@ -873,6 +875,32 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                   <div className="list-card">
                     {pool.items.map((item) => (
                       <div className="list-item" key={item.id}>
+                        {(() => {
+                          const claimInterestNames = parseLootClaimInterestNames(item.resolutionMetadata);
+                          const interestedCharacters = claimInterestNames
+                            .map((name) =>
+                              partySummaries.find(
+                                (character) => character.name.toLowerCase() === name.toLowerCase(),
+                              ) ?? null,
+                            )
+                            .filter((character): character is (typeof partySummaries)[number] => character !== null);
+                          const assignmentOptions =
+                            interestedCharacters.length > 0
+                              ? [
+                                  ...interestedCharacters,
+                                  ...partySummaries.filter(
+                                    (character) =>
+                                      !interestedCharacters.some(
+                                        (interested) => interested.id === character.id,
+                                      ),
+                                  ),
+                                ]
+                              : partySummaries;
+                          const defaultAssigneeId =
+                            interestedCharacters[0]?.id ?? partySummaries[0]?.id;
+
+                          return (
+                            <>
                         <div className="card-header">
                           <div>
                             <strong>{item.itemNameSnapshot}</strong>
@@ -887,7 +915,19 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                           <p className="muted">This pool item will become a loot record when it is assigned, rolled, or banked.</p>
                         ) : null}
                         {item.awardedCharacter ? (
-                          <p className="muted">Assigned to {item.awardedCharacter.name}</p>
+                          <p className="muted">
+                            Assigned to {item.awardedCharacter.name}
+                            {item.resolutionScope ? ` · ${formatHoldingScopeLabel(item.resolutionScope)}` : ""}
+                          </p>
+                        ) : null}
+                        {claimInterestNames.length > 0 ? (
+                          <div className="tag-row">
+                            {claimInterestNames.map((name) => (
+                              <span className="tag" key={name}>
+                                Interested: {name}
+                              </span>
+                            ))}
+                          </div>
                         ) : null}
                         {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
                         {item.rollEntries.length > 0 ? (
@@ -909,10 +949,15 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                               <div className="subgrid">
                                 <label className="field-label">
                                   Assign to
-                                  <select name="characterId" defaultValue={partySummaries[0]?.id}>
-                                    {partySummaries.map((character) => (
+                                  <select name="characterId" defaultValue={defaultAssigneeId}>
+                                    {assignmentOptions.map((character) => (
                                       <option key={character.id} value={character.id}>
                                         {character.name}
+                                        {claimInterestNames.some(
+                                          (name) => name.toLowerCase() === character.name.toLowerCase(),
+                                        )
+                                          ? " · interested"
+                                          : ""}
                                       </option>
                                     ))}
                                   </select>
@@ -927,7 +972,14 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                               </div>
                               <label className="field-label">
                                 Note
-                                <input name="note" placeholder="Direct award note" />
+                                <input
+                                  name="note"
+                                  placeholder={
+                                    interestedCharacters.length > 0
+                                      ? "Approve an interested player or override."
+                                      : "Direct award note"
+                                  }
+                                />
                               </label>
                               <div className="button-row">
                                 <button className="button-secondary" type="submit">
@@ -976,6 +1028,9 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                             </form>
                           </div>
                         ) : null}
+                            </>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>
