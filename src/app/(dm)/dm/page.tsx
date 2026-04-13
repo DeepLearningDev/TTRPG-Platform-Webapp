@@ -26,7 +26,10 @@ import {
   splitTags,
 } from "@/lib/format";
 import { buildLootPoolDraft } from "@/lib/loot-generation";
-import { parseLootClaimInterestNames } from "@/lib/loot-progress";
+import {
+  parseLootClaimInterestNames,
+  prioritizeInterestedCharacters,
+} from "@/lib/loot-progress";
 import {
   assignLootPoolItemAction,
   archiveNpcAction,
@@ -877,25 +880,11 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                       <div className="list-item" key={item.id}>
                         {(() => {
                           const claimInterestNames = parseLootClaimInterestNames(item.resolutionMetadata);
-                          const interestedCharacters = claimInterestNames
-                            .map((name) =>
-                              partySummaries.find(
-                                (character) => character.name.toLowerCase() === name.toLowerCase(),
-                              ) ?? null,
-                            )
-                            .filter((character): character is (typeof partySummaries)[number] => character !== null);
-                          const assignmentOptions =
-                            interestedCharacters.length > 0
-                              ? [
-                                  ...interestedCharacters,
-                                  ...partySummaries.filter(
-                                    (character) =>
-                                      !interestedCharacters.some(
-                                        (interested) => interested.id === character.id,
-                                      ),
-                                  ),
-                                ]
-                              : partySummaries;
+                          const { interestedCharacters, orderedCharacters: assignmentOptions } =
+                            prioritizeInterestedCharacters({
+                              names: claimInterestNames,
+                              characters: partySummaries,
+                            });
                           const defaultAssigneeId =
                             interestedCharacters[0]?.id ?? partySummaries[0]?.id;
 
@@ -926,6 +915,50 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                               <span className="tag" key={name}>
                                 Interested: {name}
                               </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {item.status === "BANKED" && interestedCharacters.length > 0 ? (
+                          <div className="card-stack">
+                            {interestedCharacters.map((character) => (
+                              <div className="list-card" key={character.id}>
+                                <div className="card-header">
+                                  <strong>{character.name}</strong>
+                                  <span className="tag">Claim shortcut</span>
+                                </div>
+                                <div className="button-row">
+                                  <form action={assignLootPoolItemAction}>
+                                    <input type="hidden" name="campaignId" value={campaign.id} />
+                                    <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                                    <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                    <input type="hidden" name="characterId" value={character.id} />
+                                    <input type="hidden" name="scope" value={HoldingScope.BANK} />
+                                    <input
+                                      type="hidden"
+                                      name="note"
+                                      value={`Approved ${character.name}'s claim and sent item to Bank.`}
+                                    />
+                                    <button className="button-secondary" type="submit">
+                                      Approve to bank
+                                    </button>
+                                  </form>
+                                  <form action={assignLootPoolItemAction}>
+                                    <input type="hidden" name="campaignId" value={campaign.id} />
+                                    <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                                    <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                    <input type="hidden" name="characterId" value={character.id} />
+                                    <input type="hidden" name="scope" value={HoldingScope.INVENTORY} />
+                                    <input
+                                      type="hidden"
+                                      name="note"
+                                      value={`Approved ${character.name}'s claim and sent item to Inventory.`}
+                                    />
+                                    <button className="pill-button" type="submit">
+                                      Approve to inventory
+                                    </button>
+                                  </form>
+                                </div>
+                              </div>
                             ))}
                           </div>
                         ) : null}

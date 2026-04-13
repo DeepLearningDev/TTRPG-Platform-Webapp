@@ -3,6 +3,7 @@ import {
   formatLootClaimInterestMetadata,
   getPlayerLootItemProgress,
   parseLootClaimInterestNames,
+  prioritizeInterestedCharacters,
   summarizePlayerLootPool,
   toggleLootClaimInterest,
 } from "@/lib/loot-progress";
@@ -166,5 +167,26 @@ describe("claim interest metadata helpers", () => {
         interested: false,
       }),
     ).toBe("Claim interest: Toren Ash.");
+  });
+
+  it("prioritizes interested characters ahead of the rest of the party", () => {
+    const result = prioritizeInterestedCharacters({
+      names: ["Toren Ash", "Miri Vale"],
+      characters: [
+        { id: "miri", name: "Miri Vale" },
+        { id: "sella", name: "Sella Drift" },
+        { id: "toren", name: "Toren Ash" },
+      ],
+    });
+
+    expect(result.interestedCharacters.map((character) => character.name)).toEqual([
+      "Toren Ash",
+      "Miri Vale",
+    ]);
+    expect(result.orderedCharacters.map((character) => character.name)).toEqual([
+      "Toren Ash",
+      "Miri Vale",
+      "Sella Drift",
+    ]);
   });
 });

@@ -73,6 +73,37 @@ export function parseLootClaimInterestNames(value: string | null | undefined) {
   return Array.from(deduped.values());
 }
 
+export function prioritizeInterestedCharacters<T extends { id: string; name: string }>(input: {
+  names: string[];
+  characters: T[];
+}) {
+  const interestedCharacters = input.names
+    .map((name) =>
+      input.characters.find(
+        (character) => normalizeClaimName(character.name) === normalizeClaimName(name),
+      ) ?? null,
+    )
+    .filter((character): character is T => character !== null);
+
+  if (interestedCharacters.length === 0) {
+    return {
+      interestedCharacters: [],
+      orderedCharacters: input.characters,
+    };
+  }
+
+  return {
+    interestedCharacters,
+    orderedCharacters: [
+      ...interestedCharacters,
+      ...input.characters.filter(
+        (character) =>
+          !interestedCharacters.some((interested) => interested.id === character.id),
+      ),
+    ],
+  };
+}
+
 export function formatLootClaimInterestMetadata(names: string[]) {
   const uniqueNames = parseLootClaimInterestNames(`Claim interest: ${names.join(", ")}`);
 
