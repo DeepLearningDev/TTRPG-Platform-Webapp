@@ -31,6 +31,12 @@ import {
   prioritizeInterestedCharacters,
 } from "@/lib/loot-progress";
 import {
+  formatLootAuditDate,
+  formatLootAuditDetail,
+  formatLootAuditHeadline,
+  getRecentLootAwardEntries,
+} from "@/lib/loot-audit";
+import {
   assignLootPoolItemAction,
   archiveNpcAction,
   archiveCampaignAction,
@@ -211,6 +217,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
         Math.max(1, partySummaries.length),
     ),
   );
+  const recentLootAwards = getRecentLootAwardEntries(campaign.ledgerEntries);
   const openQuests = quests.filter((quest) => quest.status !== QuestStatus.COMPLETE);
   const activeStorefronts = storefronts.filter(
     (storefront) => storefront.status === StorefrontStatus.ACTIVE,
@@ -1176,15 +1183,15 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           </form>
 
           <div className="list-card">
-            {campaign.ledgerEntries.map((entry) => (
+            {recentLootAwards.map((entry) => (
               <div className="list-item" key={entry.id}>
                 <div className="card-header">
-                  <strong>{entry.character.name}</strong>
-                  <span className="tag">{formatEnumLabel(entry.scope)}</span>
+                  <strong>{formatLootAuditHeadline(entry)}</strong>
+                  <span className="tag">{formatLootAuditDate(entry.createdAt)}</span>
                 </div>
                 <div className="muted">
-                  {entry.lootItem ? `${entry.lootItem.name} × ${entry.quantity}` : "Gold only"} ·{" "}
-                  {formatCopperAsGold(entry.goldDelta)}
+                  {formatLootAuditDetail(entry)}
+                  {entry.goldDelta ? ` · ${formatCopperAsGold(entry.goldDelta)}` : ""}
                 </div>
                 <p>{entry.note}</p>
               </div>

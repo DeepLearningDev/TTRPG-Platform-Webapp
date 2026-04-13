@@ -5,6 +5,11 @@ import { getPlayerAccountBySession } from "@/lib/campaign-vault";
 import { formatCraftingMaterials, parseCraftingMaterials } from "@/lib/crafting-resolution";
 import { formatCopperAsGold, formatEnumLabel } from "@/lib/format";
 import {
+  formatLootAuditDate,
+  formatLootAuditHeadline,
+  getRecentLootAwardEntries,
+} from "@/lib/loot-audit";
+import {
   getPlayerLootItemProgress,
   summarizePlayerLootPool,
 } from "@/lib/loot-progress";
@@ -100,6 +105,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
       banked: 0,
     },
   );
+  const recentLootAwards = getRecentLootAwardEntries(account.ledgerEntries);
 
   return (
     <main className="app-shell">
@@ -357,29 +363,29 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
             <div>
               <span className="section-kicker">
                 <ScrollText size={14} />
-                Recent transactions
+                Recent loot
               </span>
-              <h2>What changed recently</h2>
+              <h2>Recent deliveries</h2>
             </div>
           </div>
-          {account.ledgerEntries.length > 0 ? (
+          {recentLootAwards.length > 0 ? (
             <div className="list-card">
-              {account.ledgerEntries.slice(0, 8).map((entry) => (
+              {recentLootAwards.slice(0, 8).map((entry) => (
                 <div className="list-item" key={entry.id}>
                   <div className="card-header">
-                    <strong>{formatEnumLabel(entry.scope)}</strong>
-                    <span className="tag">{formatEnumLabel(entry.entryType)}</span>
+                    <strong>{formatLootAuditHeadline(entry)}</strong>
+                    <span className="tag">{formatLootAuditDate(entry.createdAt)}</span>
                   </div>
                   <div className="muted">
-                    {entry.lootItem ? `${entry.lootItem.name} × ${entry.quantity}` : "Gold movement"} ·{" "}
-                    {formatCopperAsGold(entry.goldDelta)}
+                    {entry.scope === "BANK" ? "Bank" : "Inventory"}
+                    {entry.goldDelta ? ` · ${formatCopperAsGold(entry.goldDelta)}` : ""}
                   </div>
                   <p>{entry.note}</p>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="callout">No ledger activity has been recorded yet.</div>
+            <div className="callout">No loot deliveries have been recorded yet.</div>
           )}
         </article>
       </section>
