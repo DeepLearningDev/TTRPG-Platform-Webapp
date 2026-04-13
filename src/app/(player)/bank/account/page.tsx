@@ -4,6 +4,10 @@ import { redirect } from "next/navigation";
 import { getPlayerAccountBySession } from "@/lib/campaign-vault";
 import { formatCraftingMaterials, parseCraftingMaterials } from "@/lib/crafting-resolution";
 import { formatCopperAsGold, formatEnumLabel } from "@/lib/format";
+import {
+  getPlayerLootItemProgress,
+  summarizePlayerLootPool,
+} from "@/lib/loot-progress";
 import { clearPlayerSession, getPlayerSession } from "@/lib/player-session";
 import {
   acceptQuestAction,
@@ -70,6 +74,27 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
   const errorMessage = params.error
     ? lootErrorMessages[params.error] ?? "Unable to save that loot response."
     : null;
+  const overallLootProgress = account.lootPools.reduce(
+    (summary, pool) => {
+      const poolSummary = summarizePlayerLootPool({
+        accountId: account.id,
+        items: pool.items,
+      });
+
+      summary.actionNeeded += poolSummary.actionNeeded;
+      summary.awaitingResolution += poolSummary.awaitingResolution;
+      summary.assignedToYou += poolSummary.assignedToYou;
+      summary.banked += poolSummary.banked;
+
+      return summary;
+    },
+    {
+      actionNeeded: 0,
+      awaitingResolution: 0,
+      assignedToYou: 0,
+      banked: 0,
+    },
+  );
 
   return (
     <main className="app-shell">
@@ -123,6 +148,14 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
           <span className="metric-label">Crafting jobs</span>
           <div className="metric-value">{account.campaign.craftingJobs.length}</div>
         </article>
+        <article className="metric-card">
+          <span className="metric-label">Loot actions</span>
+          <div className="metric-value">{overallLootProgress.actionNeeded}</div>
+        </article>
+        <article className="metric-card">
+          <span className="metric-label">Assigned to you</span>
+          <div className="metric-value">{overallLootProgress.assignedToYou}</div>
+        </article>
       </section>
 
       <section className="two-column-grid">
@@ -138,8 +171,14 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
           </div>
           <div className="card-stack">
             {account.lootPools.length > 0 ? (
-              account.lootPools.map((pool) => (
-                <div className="item-card" key={pool.id}>
+              account.lootPools.map((pool) => {
+                const poolSummary = summarizePlayerLootPool({
+                  accountId: account.id,
+                  items: pool.items,
+                });
+
+                return (
+                  <div className="item-card" key={pool.id}>
                   <div className="card-header">
                     <div>
                       <div className="value-line">{pool.title}</div>
@@ -151,11 +190,41 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                     </div>
                     <span className="tag">{formatEnumLabel(pool.status)}</span>
                   </div>
+                  <div className="tag-row">
+                    {poolSummary.actionNeeded > 0 ? (
+                      <span className="tag danger-tag">
+                        {poolSummary.actionNeeded} action needed
+                      </span>
+                    ) : null}
+                    {poolSummary.awaitingResolution > 0 ? (
+                      <span className="tag">
+                        {poolSummary.awaitingResolution} awaiting resolution
+                      </span>
+                    ) : null}
+                    {poolSummary.assignedToYou > 0 ? (
+                      <span className="tag">
+                        {poolSummary.assignedToYou} assigned to you
+                      </span>
+                    ) : null}
+                    {poolSummary.banked > 0 ? (
+                      <span className="tag">
+                        {poolSummary.banked} banked for later
+                      </span>
+                    ) : null}
+                    {poolSummary.actionNeeded === 0 &&
+                    poolSummary.awaitingResolution === 0 &&
+                    poolSummary.assignedToYou === 0 &&
+                    poolSummary.banked === 0 ? (
+                      <span className="tag">No open actions in this pool</span>
+                    ) : null}
+                  </div>
                   <div className="card-stack">
                     {pool.items.map((item) => {
-                      const myRoll = item.rollEntries.find(
-                        (entry) => entry.characterId === account.id,
-                      );
+                      const progress = getPlayerLootItemProgress({
+                        accountId: account.id,
+                        item,
+                      });
+                      const myRoll = progress.myRoll;
                       const canRespond =
                         item.status === "UNRESOLVED" &&
                         item.distributionMode === "ROLL" &&
@@ -174,12 +243,9 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                             <span className="tag">{formatEnumLabel(item.status)}</span>
                           </div>
                           <p className="muted">
-                            {item.awardedCharacter
-                              ? `Assigned to ${item.awardedCharacter.name}`
-                              : item.status === "BANKED"
-                                ? "Held for later party distribution"
-                                : "Still unresolved"}
+                            {progress.headline}
                           </p>
+                          <p className="muted">{progress.detail}</p>
                           {myRoll ? (
                             <p className="muted">
                               Your roll: {myRoll.rollTotal ?? "not rolled"} · {formatEnumLabel(myRoll.status)}
@@ -216,8 +282,9 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                       );
                     })}
                   </div>
-                </div>
-              ))
+                  </div>
+                );
+              })
             ) : (
               <div className="callout">No shared loot pools are active right now.</div>
             )}
