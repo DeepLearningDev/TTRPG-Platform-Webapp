@@ -38,6 +38,12 @@ export type LootHistorySection = {
 };
 
 export type LootHistoryDestinationFilter = "all" | "bank" | "inventory";
+export type LootHistorySourceFilter =
+  | "all"
+  | "Claim approved"
+  | "Party roll"
+  | "Direct assignment"
+  | "Manual award";
 
 export function parseLootHistoryDestinationFilter(
   value: string | null | undefined,
@@ -65,6 +71,46 @@ export function getLootHistoryDestinationCounts<T extends LootAuditEntry>(entrie
     all: entries.length,
     bank: entries.filter((entry) => entry.scope === "BANK").length,
     inventory: entries.filter((entry) => entry.scope === "INVENTORY").length,
+  };
+}
+
+export function parseLootHistorySourceFilter(
+  value: string | null | undefined,
+): LootHistorySourceFilter {
+  if (
+    value === "Claim approved" ||
+    value === "Party roll" ||
+    value === "Direct assignment" ||
+    value === "Manual award"
+  ) {
+    return value;
+  }
+
+  return "all";
+}
+
+export function filterLootAwardsBySource<T extends LootAuditEntry>(
+  entries: T[],
+  filter: LootHistorySourceFilter,
+) {
+  if (filter === "all") {
+    return entries;
+  }
+
+  return entries.filter((entry) => getLootAuditSource(entry).label === filter);
+}
+
+export function getLootHistorySourceCounts<T extends LootAuditEntry>(entries: T[]) {
+  return {
+    all: entries.length,
+    claimApproved: entries.filter((entry) => getLootAuditSource(entry).label === "Claim approved")
+      .length,
+    partyRoll: entries.filter((entry) => getLootAuditSource(entry).label === "Party roll").length,
+    directAssignment: entries.filter(
+      (entry) => getLootAuditSource(entry).label === "Direct assignment",
+    ).length,
+    manualAward: entries.filter((entry) => getLootAuditSource(entry).label === "Manual award")
+      .length,
   };
 }
 

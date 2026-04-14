@@ -42,10 +42,13 @@ import {
   buildLootHistorySections,
   filterLootAwardsByDestination,
   filterLootAwardsByRecipient,
+  filterLootAwardsBySource,
   filterLootReservationsByRecipient,
   getLootHistoryDestinationCounts,
+  getLootHistorySourceCounts,
   parseLootHistoryDestinationFilter,
   parseLootHistoryRecipientFilter,
+  parseLootHistorySourceFilter,
 } from "@/lib/loot-history";
 import {
   formatLootReservationDetail,
@@ -107,6 +110,7 @@ type DmPageProps = {
     notes?: string;
     historyScope?: string;
     historyRecipient?: string;
+    historySource?: string;
   }>;
 };
 
@@ -132,11 +136,12 @@ function buildDmHistoryHref(input: {
   params: Awaited<DmPageProps["searchParams"]>;
   historyScope: string;
   historyRecipient?: string;
+  historySource?: string;
 }) {
   const next = new URLSearchParams();
 
   for (const [key, value] of Object.entries(input.params)) {
-    if (!value || key === "historyScope" || key === "historyRecipient") {
+    if (!value || key === "historyScope" || key === "historyRecipient" || key === "historySource") {
       continue;
     }
 
@@ -149,6 +154,10 @@ function buildDmHistoryHref(input: {
 
   if (input.historyRecipient && input.historyRecipient !== "all") {
     next.set("historyRecipient", input.historyRecipient);
+  }
+
+  if (input.historySource && input.historySource !== "all") {
+    next.set("historySource", input.historySource);
   }
 
   const query = next.toString();
@@ -275,9 +284,14 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     params.historyRecipient,
     partySummaries.map((character) => character.name),
   );
+  const historySource = parseLootHistorySourceFilter(params.historySource);
   const historyCounts = getLootHistoryDestinationCounts(recentLootAwards);
+  const historySourceCounts = getLootHistorySourceCounts(recentLootAwards);
   const filteredRecentLootAwards = filterLootAwardsByRecipient(
-    filterLootAwardsByDestination(recentLootAwards, historyScope),
+    filterLootAwardsBySource(
+      filterLootAwardsByDestination(recentLootAwards, historyScope),
+      historySource,
+    ),
     historyRecipient,
   );
   const activeLootReservations = getActiveLootReservations(
@@ -1340,6 +1354,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                 params,
                 historyScope: "all",
                 historyRecipient,
+                historySource,
               })}
             >
               All {historyCounts.all}
@@ -1350,6 +1365,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                 params,
                 historyScope: "bank",
                 historyRecipient,
+                historySource,
               })}
             >
               Bank {historyCounts.bank}
@@ -1360,6 +1376,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                 params,
                 historyScope: "inventory",
                 historyRecipient,
+                historySource,
               })}
             >
               Inventory {historyCounts.inventory}
@@ -1368,7 +1385,12 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           <div className="tag-row">
             <Link
               className="tag"
-              href={buildDmHistoryHref({ params, historyScope, historyRecipient: "all" })}
+              href={buildDmHistoryHref({
+                params,
+                historyScope,
+                historyRecipient: "all",
+                historySource,
+              })}
             >
               Everyone
             </Link>
@@ -1379,12 +1401,70 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                   params,
                   historyScope,
                   historyRecipient: character.name,
+                  historySource,
                 })}
                 key={character.id}
               >
                 {character.name}
               </Link>
             ))}
+          </div>
+          <div className="tag-row">
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope,
+                historyRecipient,
+                historySource: "all",
+              })}
+            >
+              All sources {historySourceCounts.all}
+            </Link>
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope,
+                historyRecipient,
+                historySource: "Claim approved",
+              })}
+            >
+              Claim approved {historySourceCounts.claimApproved}
+            </Link>
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope,
+                historyRecipient,
+                historySource: "Party roll",
+              })}
+            >
+              Party roll {historySourceCounts.partyRoll}
+            </Link>
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope,
+                historyRecipient,
+                historySource: "Direct assignment",
+              })}
+            >
+              Direct {historySourceCounts.directAssignment}
+            </Link>
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope,
+                historyRecipient,
+                historySource: "Manual award",
+              })}
+            >
+              Manual {historySourceCounts.manualAward}
+            </Link>
           </div>
           <div className="list-card">
             {filteredRecentLootAwards.length > 0 ? (

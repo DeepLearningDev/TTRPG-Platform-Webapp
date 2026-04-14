@@ -13,8 +13,11 @@ import {
 import {
   buildLootHistorySections,
   filterLootAwardsByDestination,
+  filterLootAwardsBySource,
   getLootHistoryDestinationCounts,
+  getLootHistorySourceCounts,
   parseLootHistoryDestinationFilter,
+  parseLootHistorySourceFilter,
 } from "@/lib/loot-history";
 import {
   formatLootReservationDetail,
@@ -48,6 +51,7 @@ type BankAccountPageProps = {
     quest?: string;
     mail?: string;
     historyScope?: string;
+    historySource?: string;
   }>;
 };
 
@@ -81,11 +85,12 @@ const lootErrorMessages: Record<string, string> = {
 function buildPlayerHistoryHref(input: {
   params: Awaited<BankAccountPageProps["searchParams"]>;
   historyScope: string;
+  historySource?: string;
 }) {
   const next = new URLSearchParams();
 
   for (const [key, value] of Object.entries(input.params)) {
-    if (!value || key === "historyScope") {
+    if (!value || key === "historyScope" || key === "historySource") {
       continue;
     }
 
@@ -94,6 +99,10 @@ function buildPlayerHistoryHref(input: {
 
   if (input.historyScope !== "all") {
     next.set("historyScope", input.historyScope);
+  }
+
+  if (input.historySource && input.historySource !== "all") {
+    next.set("historySource", input.historySource);
   }
 
   const query = next.toString();
@@ -150,8 +159,13 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
   );
   const recentLootAwards = getRecentLootAwardEntries(account.ledgerEntries);
   const historyScope = parseLootHistoryDestinationFilter(params.historyScope);
+  const historySource = parseLootHistorySourceFilter(params.historySource);
   const historyCounts = getLootHistoryDestinationCounts(recentLootAwards);
-  const filteredRecentLootAwards = filterLootAwardsByDestination(recentLootAwards, historyScope);
+  const historySourceCounts = getLootHistorySourceCounts(recentLootAwards);
+  const filteredRecentLootAwards = filterLootAwardsBySource(
+    filterLootAwardsByDestination(recentLootAwards, historyScope),
+    historySource,
+  );
   const activeLootReservations = getActiveLootReservations(
     account.lootPools.flatMap((pool) =>
       pool.items.map((item) => ({
@@ -464,17 +478,75 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
             </div>
           </div>
           <div className="tag-row">
-            <Link className="tag" href={buildPlayerHistoryHref({ params, historyScope: "all" })}>
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({ params, historyScope: "all", historySource })}
+            >
               All {historyCounts.all}
             </Link>
-            <Link className="tag" href={buildPlayerHistoryHref({ params, historyScope: "bank" })}>
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({ params, historyScope: "bank", historySource })}
+            >
               Bank {historyCounts.bank}
             </Link>
             <Link
               className="tag"
-              href={buildPlayerHistoryHref({ params, historyScope: "inventory" })}
+              href={buildPlayerHistoryHref({
+                params,
+                historyScope: "inventory",
+                historySource,
+              })}
             >
               Inventory {historyCounts.inventory}
+            </Link>
+          </div>
+          <div className="tag-row">
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({ params, historyScope, historySource: "all" })}
+            >
+              All sources {historySourceCounts.all}
+            </Link>
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({
+                params,
+                historyScope,
+                historySource: "Claim approved",
+              })}
+            >
+              Claim approved {historySourceCounts.claimApproved}
+            </Link>
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({
+                params,
+                historyScope,
+                historySource: "Party roll",
+              })}
+            >
+              Party roll {historySourceCounts.partyRoll}
+            </Link>
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({
+                params,
+                historyScope,
+                historySource: "Direct assignment",
+              })}
+            >
+              Direct {historySourceCounts.directAssignment}
+            </Link>
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({
+                params,
+                historyScope,
+                historySource: "Manual award",
+              })}
+            >
+              Manual {historySourceCounts.manualAward}
             </Link>
           </div>
           {filteredRecentLootAwards.length > 0 ? (

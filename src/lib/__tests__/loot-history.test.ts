@@ -3,10 +3,13 @@ import {
   buildLootHistorySections,
   filterLootAwardsByDestination,
   filterLootAwardsByRecipient,
+  filterLootAwardsBySource,
   filterLootReservationsByRecipient,
   getLootHistoryDestinationCounts,
+  getLootHistorySourceCounts,
   parseLootHistoryRecipientFilter,
   parseLootHistoryDestinationFilter,
+  parseLootHistorySourceFilter,
 } from "@/lib/loot-history";
 
 describe("loot history sections", () => {
@@ -105,5 +108,23 @@ describe("loot history sections", () => {
     expect(
       filterLootReservationsByRecipient(reservations, "Miri Vale").map((entry) => entry.id),
     ).toEqual(["reserve-1"]);
+  });
+
+  it("filters awards by source label", () => {
+    expect(parseLootHistorySourceFilter("Party roll")).toBe("Party roll");
+    expect(parseLootHistorySourceFilter("weird")).toBe("all");
+    expect(filterLootAwardsBySource(awards, "Claim approved").map((entry) => entry.id)).toEqual([
+      "award-1",
+    ]);
+    expect(filterLootAwardsBySource(awards, "Party roll").map((entry) => entry.id)).toEqual([
+      "award-2",
+    ]);
+    expect(getLootHistorySourceCounts(awards)).toEqual({
+      all: 2,
+      claimApproved: 1,
+      partyRoll: 1,
+      directAssignment: 0,
+      manualAward: 0,
+    });
   });
 });
