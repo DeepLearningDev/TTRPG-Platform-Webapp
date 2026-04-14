@@ -38,7 +38,12 @@ import {
   getLootAuditSource,
   getRecentLootAwardEntries,
 } from "@/lib/loot-audit";
-import { buildLootHistorySections } from "@/lib/loot-history";
+import {
+  buildLootHistorySections,
+  filterLootAwardsByDestination,
+  getLootHistoryDestinationCounts,
+  parseLootHistoryDestinationFilter,
+} from "@/lib/loot-history";
 import {
   formatLootReservationDetail,
   formatLootReservationHeadline,
@@ -92,6 +97,7 @@ type DmPageProps = {
     itemCount?: string;
     includeMonsterMaterials?: string;
     notes?: string;
+    historyScope?: string;
   }>;
 };
 
@@ -111,6 +117,29 @@ function readOptionalSearchNumber(value?: string) {
 
 function readSearchBoolean(value?: string) {
   return value === "true" || value === "on" || value === "1";
+}
+
+function buildDmHistoryHref(input: {
+  params: Awaited<DmPageProps["searchParams"]>;
+  historyScope: string;
+}) {
+  const next = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(input.params)) {
+    if (!value || key === "historyScope") {
+      continue;
+    }
+
+    next.set(key, value);
+  }
+
+  if (input.historyScope !== "all") {
+    next.set("historyScope", input.historyScope);
+  }
+
+  const query = next.toString();
+
+  return query ? `/dm?${query}` : "/dm";
 }
 
 const dmErrorMessages: Record<string, string> = {
@@ -227,6 +256,9 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     ),
   );
   const recentLootAwards = getRecentLootAwardEntries(campaign.ledgerEntries);
+  const historyScope = parseLootHistoryDestinationFilter(params.historyScope);
+  const historyCounts = getLootHistoryDestinationCounts(recentLootAwards);
+  const filteredRecentLootAwards = filterLootAwardsByDestination(recentLootAwards, historyScope);
   const activeLootReservations = getActiveLootReservations(
     lootPools.flatMap((pool) =>
       pool.items.map((item) => ({
@@ -240,7 +272,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     ),
   );
   const lootHistorySections = buildLootHistorySections({
-    awards: recentLootAwards,
+    awards: filteredRecentLootAwards,
     reservations: activeLootReservations,
   });
   const openQuests = quests.filter((quest) => quest.status !== QuestStatus.COMPLETE);
@@ -1259,8 +1291,19 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             </div>
           </form>
 
+          <div className="tag-row">
+            <Link className="tag" href={buildDmHistoryHref({ params, historyScope: "all" })}>
+              All {historyCounts.all}
+            </Link>
+            <Link className="tag" href={buildDmHistoryHref({ params, historyScope: "bank" })}>
+              Bank {historyCounts.bank}
+            </Link>
+            <Link className="tag" href={buildDmHistoryHref({ params, historyScope: "inventory" })}>
+              Inventory {historyCounts.inventory}
+            </Link>
+          </div>
           <div className="list-card">
-            {recentLootAwards.map((entry) => (
+            {filteredRecentLootAwards.map((entry) => (
               <div className="list-item" key={entry.id}>
                 {(() => {
                   const source = getLootAuditSource(entry);

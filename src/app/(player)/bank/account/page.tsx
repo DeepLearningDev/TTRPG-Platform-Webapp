@@ -10,7 +10,12 @@ import {
   getLootAuditSource,
   getRecentLootAwardEntries,
 } from "@/lib/loot-audit";
-import { buildLootHistorySections } from "@/lib/loot-history";
+import {
+  buildLootHistorySections,
+  filterLootAwardsByDestination,
+  getLootHistoryDestinationCounts,
+  parseLootHistoryDestinationFilter,
+} from "@/lib/loot-history";
 import {
   formatLootReservationDetail,
   formatLootReservationHeadline,
@@ -37,6 +42,7 @@ type BankAccountPageProps = {
     loot?: string;
     quest?: string;
     mail?: string;
+    historyScope?: string;
   }>;
 };
 
@@ -66,6 +72,29 @@ const lootErrorMessages: Record<string, string> = {
   "invalid-player-mail-state":
     "That mail reply could not be posted because the thread is no longer available to your character.",
 };
+
+function buildPlayerHistoryHref(input: {
+  params: Awaited<BankAccountPageProps["searchParams"]>;
+  historyScope: string;
+}) {
+  const next = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(input.params)) {
+    if (!value || key === "historyScope") {
+      continue;
+    }
+
+    next.set(key, value);
+  }
+
+  if (input.historyScope !== "all") {
+    next.set("historyScope", input.historyScope);
+  }
+
+  const query = next.toString();
+
+  return query ? `/bank/account?${query}` : "/bank/account";
+}
 
 export default async function BankAccountPage({ searchParams }: BankAccountPageProps) {
   const session = await getPlayerSession();
@@ -115,6 +144,9 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
     },
   );
   const recentLootAwards = getRecentLootAwardEntries(account.ledgerEntries);
+  const historyScope = parseLootHistoryDestinationFilter(params.historyScope);
+  const historyCounts = getLootHistoryDestinationCounts(recentLootAwards);
+  const filteredRecentLootAwards = filterLootAwardsByDestination(recentLootAwards, historyScope);
   const activeLootReservations = getActiveLootReservations(
     account.lootPools.flatMap((pool) =>
       pool.items.map((item) => ({
@@ -131,7 +163,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
     (reservation) => reservation.reservedForName.toLowerCase() === account.name.toLowerCase(),
   );
   const lootHistorySections = buildLootHistorySections({
-    awards: recentLootAwards,
+    awards: filteredRecentLootAwards,
     reservations: myActiveReservations,
   });
 
@@ -406,9 +438,23 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
               <h2>Recent deliveries</h2>
             </div>
           </div>
-          {recentLootAwards.length > 0 ? (
+          <div className="tag-row">
+            <Link className="tag" href={buildPlayerHistoryHref({ params, historyScope: "all" })}>
+              All {historyCounts.all}
+            </Link>
+            <Link className="tag" href={buildPlayerHistoryHref({ params, historyScope: "bank" })}>
+              Bank {historyCounts.bank}
+            </Link>
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({ params, historyScope: "inventory" })}
+            >
+              Inventory {historyCounts.inventory}
+            </Link>
+          </div>
+          {filteredRecentLootAwards.length > 0 ? (
             <div className="list-card">
-              {recentLootAwards.slice(0, 8).map((entry) => (
+              {filteredRecentLootAwards.slice(0, 8).map((entry) => (
                 <div className="list-item" key={entry.id}>
                   {(() => {
                     const source = getLootAuditSource(entry);

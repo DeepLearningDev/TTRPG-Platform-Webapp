@@ -37,6 +37,37 @@ export type LootHistorySection = {
   items: LootHistoryItem[];
 };
 
+export type LootHistoryDestinationFilter = "all" | "bank" | "inventory";
+
+export function parseLootHistoryDestinationFilter(
+  value: string | null | undefined,
+): LootHistoryDestinationFilter {
+  if (value === "bank" || value === "inventory") {
+    return value;
+  }
+
+  return "all";
+}
+
+export function filterLootAwardsByDestination<T extends LootAuditEntry>(
+  entries: T[],
+  filter: LootHistoryDestinationFilter,
+) {
+  if (filter === "all") {
+    return entries;
+  }
+
+  return entries.filter((entry) => entry.scope === filter.toUpperCase());
+}
+
+export function getLootHistoryDestinationCounts<T extends LootAuditEntry>(entries: T[]) {
+  return {
+    all: entries.length,
+    bank: entries.filter((entry) => entry.scope === "BANK").length,
+    inventory: entries.filter((entry) => entry.scope === "INVENTORY").length,
+  };
+}
+
 export function buildLootHistorySections(input: {
   awards: LootAuditEntry[];
   reservations: ActiveLootReservation[];

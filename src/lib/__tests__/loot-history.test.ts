@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildLootHistorySections } from "@/lib/loot-history";
+import {
+  buildLootHistorySections,
+  filterLootAwardsByDestination,
+  getLootHistoryDestinationCounts,
+  parseLootHistoryDestinationFilter,
+} from "@/lib/loot-history";
 
 describe("loot history sections", () => {
   const reservations = [
@@ -65,5 +70,22 @@ describe("loot history sections", () => {
       "Party roll",
       "Miri Vale",
     ]);
+  });
+
+  it("filters awards by destination", () => {
+    expect(parseLootHistoryDestinationFilter("bank")).toBe("bank");
+    expect(parseLootHistoryDestinationFilter("inventory")).toBe("inventory");
+    expect(parseLootHistoryDestinationFilter("weird")).toBe("all");
+    expect(filterLootAwardsByDestination(awards, "bank").map((entry) => entry.id)).toEqual([
+      "award-1",
+    ]);
+    expect(filterLootAwardsByDestination(awards, "inventory").map((entry) => entry.id)).toEqual([
+      "award-2",
+    ]);
+    expect(getLootHistoryDestinationCounts(awards)).toEqual({
+      all: 2,
+      bank: 1,
+      inventory: 1,
+    });
   });
 });
