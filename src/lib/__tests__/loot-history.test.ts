@@ -1,0 +1,69 @@
+import { describe, expect, it } from "vitest";
+import { buildLootHistorySections } from "@/lib/loot-history";
+
+describe("loot history sections", () => {
+  const reservations = [
+    {
+      id: "reserve-1",
+      itemName: "Sunforged Band",
+      quantity: 1,
+      reservedForName: "Miri Vale",
+      claimInterestNames: ["Miri Vale", "Toren Ash"],
+      reservedAt: new Date("2026-04-13T22:10:00.000Z"),
+      detail: "Reserved for Miri Vale pending final delivery.",
+      source: "Sunken Shrine",
+    },
+  ];
+
+  const awards = [
+    {
+      id: "award-1",
+      createdAt: new Date("2026-04-13T23:10:00.000Z"),
+      scope: "BANK",
+      entryType: "AWARD",
+      quantity: 1,
+      goldDelta: 0,
+      note: "Approved Miri Vale's claim and sent item to Bank.",
+      lootItem: { name: "Sunforged Band" },
+      character: { name: "Miri Vale" },
+    },
+    {
+      id: "award-2",
+      createdAt: new Date("2026-04-13T21:10:00.000Z"),
+      scope: "INVENTORY",
+      entryType: "AWARD",
+      quantity: 1,
+      goldDelta: 0,
+      note: "Sunken Shrine Spoils: Roll-off: Miri Vale 18, Toren Ash 12. Winner: Miri Vale.",
+      lootItem: { name: "Moonlit Compass" },
+      character: { name: "Miri Vale" },
+    },
+  ];
+
+  it("groups reservation, claim-approved, and other delivery history", () => {
+    const sections = buildLootHistorySections({
+      awards,
+      reservations,
+    });
+
+    expect(sections.map((section) => [section.key, section.count])).toEqual([
+      ["reserved", 1],
+      ["claim-approved", 1],
+      ["delivered", 1],
+    ]);
+
+    expect(sections[0]?.items[0]?.tags).toEqual([
+      "Reserved now",
+      "Miri Vale",
+      "2 interested",
+    ]);
+    expect(sections[1]?.items[0]?.tags).toEqual([
+      "Claim approved",
+      "Miri Vale",
+    ]);
+    expect(sections[2]?.items[0]?.tags).toEqual([
+      "Party roll",
+      "Miri Vale",
+    ]);
+  });
+});

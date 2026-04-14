@@ -38,6 +38,7 @@ import {
   getLootAuditSource,
   getRecentLootAwardEntries,
 } from "@/lib/loot-audit";
+import { buildLootHistorySections } from "@/lib/loot-history";
 import {
   formatLootReservationDetail,
   formatLootReservationHeadline,
@@ -238,6 +239,10 @@ export default async function DmPage({ searchParams }: DmPageProps) {
       })),
     ),
   );
+  const lootHistorySections = buildLootHistorySections({
+    awards: recentLootAwards,
+    reservations: activeLootReservations,
+  });
   const openQuests = quests.filter((quest) => quest.status !== QuestStatus.COMPLETE);
   const activeStorefronts = storefronts.filter(
     (storefront) => storefront.status === StorefrontStatus.ACTIVE,
@@ -1278,6 +1283,47 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                     </>
                   );
                 })()}
+              </div>
+            ))}
+          </div>
+
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <ScrollText size={14} />
+                History lanes
+              </span>
+              <h3>Grouped loot history</h3>
+            </div>
+          </div>
+          <div className="card-stack">
+            {lootHistorySections.map((section) => (
+              <div className="list-card" key={section.key}>
+                <div className="card-header">
+                  <strong>{section.title}</strong>
+                  <span className="tag">{section.count}</span>
+                </div>
+                {section.items.length > 0 ? (
+                  section.items.slice(0, 3).map((item) => (
+                    <div className="list-item" key={item.id}>
+                      <div className="card-header">
+                        <strong>{item.headline}</strong>
+                        <span className="tag">{formatLootAuditDate(item.happenedAt)}</span>
+                      </div>
+                      <div className="tag-row">
+                        {item.tags.map((tag) => (
+                          <span className="tag" key={`${item.id}-${tag}`}>
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="muted">{item.detail}</div>
+                      <p>{item.note}</p>
+                    </div>
+                  ))
+                ) : (
+                  <div className="callout">No entries in this lane yet.</div>
+                )}
               </div>
             ))}
           </div>
