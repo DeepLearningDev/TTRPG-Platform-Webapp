@@ -11,6 +11,11 @@ import {
   getRecentLootAwardEntries,
 } from "@/lib/loot-audit";
 import {
+  formatLootReservationDetail,
+  formatLootReservationHeadline,
+  getActiveLootReservations,
+} from "@/lib/loot-reservation-audit";
+import {
   getPlayerLootItemProgress,
   summarizePlayerLootPool,
 } from "@/lib/loot-progress";
@@ -109,6 +114,21 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
     },
   );
   const recentLootAwards = getRecentLootAwardEntries(account.ledgerEntries);
+  const activeLootReservations = getActiveLootReservations(
+    account.lootPools.flatMap((pool) =>
+      pool.items.map((item) => ({
+        ...item,
+        lootPool: {
+          title: pool.title,
+          sourceText: pool.sourceText,
+          encounter: pool.encounter,
+        },
+      })),
+    ),
+  );
+  const myActiveReservations = activeLootReservations.filter(
+    (reservation) => reservation.reservedForName.toLowerCase() === account.name.toLowerCase(),
+  );
 
   return (
     <main className="app-shell">
@@ -411,6 +431,40 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
             </div>
           ) : (
             <div className="callout">No loot deliveries have been recorded yet.</div>
+          )}
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <ScrollText size={14} />
+                Reservation watch
+              </span>
+              <h2>Your reserved items</h2>
+            </div>
+          </div>
+          {myActiveReservations.length > 0 ? (
+            <div className="list-card">
+              {myActiveReservations.slice(0, 8).map((reservation) => (
+                <div className="list-item" key={reservation.id}>
+                  <div className="card-header">
+                    <strong>{formatLootReservationHeadline(reservation)}</strong>
+                    <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
+                  </div>
+                  <div className="tag-row">
+                    <span className="tag">Reserved for you</span>
+                    {reservation.claimInterestNames.length > 0 ? (
+                      <span className="tag">{reservation.claimInterestNames.length} interested</span>
+                    ) : null}
+                  </div>
+                  <div className="muted">{formatLootReservationDetail(reservation)}</div>
+                  <p>{reservation.detail}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="callout">No banked loot is currently reserved for you.</div>
           )}
         </article>
       </section>

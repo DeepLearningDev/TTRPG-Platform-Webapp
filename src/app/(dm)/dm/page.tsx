@@ -39,6 +39,11 @@ import {
   getRecentLootAwardEntries,
 } from "@/lib/loot-audit";
 import {
+  formatLootReservationDetail,
+  formatLootReservationHeadline,
+  getActiveLootReservations,
+} from "@/lib/loot-reservation-audit";
+import {
   assignLootPoolItemAction,
   archiveNpcAction,
   archiveCampaignAction,
@@ -221,6 +226,18 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     ),
   );
   const recentLootAwards = getRecentLootAwardEntries(campaign.ledgerEntries);
+  const activeLootReservations = getActiveLootReservations(
+    lootPools.flatMap((pool) =>
+      pool.items.map((item) => ({
+        ...item,
+        lootPool: {
+          title: pool.title,
+          sourceText: pool.sourceText,
+          encounter: pool.encounter,
+        },
+      })),
+    ),
+  );
   const openQuests = quests.filter((quest) => quest.status !== QuestStatus.COMPLETE);
   const activeStorefronts = storefronts.filter(
     (storefront) => storefront.status === StorefrontStatus.ACTIVE,
@@ -1264,6 +1281,39 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               </div>
             ))}
           </div>
+
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <ScrollText size={14} />
+                Reservation watch
+              </span>
+              <h3>Active reservations</h3>
+            </div>
+          </div>
+          {activeLootReservations.length > 0 ? (
+            <div className="list-card">
+              {activeLootReservations.slice(0, 8).map((reservation) => (
+                <div className="list-item" key={reservation.id}>
+                  <div className="card-header">
+                    <strong>{formatLootReservationHeadline(reservation)}</strong>
+                    <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
+                  </div>
+                  <div className="tag-row">
+                    <span className="tag">Reserved</span>
+                    <span className="tag">{reservation.reservedForName}</span>
+                    {reservation.claimInterestNames.length > 0 ? (
+                      <span className="tag">{reservation.claimInterestNames.length} interested</span>
+                    ) : null}
+                  </div>
+                  <div className="muted">{formatLootReservationDetail(reservation)}</div>
+                  <p>{reservation.detail}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="callout">No banked loot is reserved right now.</div>
+          )}
         </article>
       </section>
 
