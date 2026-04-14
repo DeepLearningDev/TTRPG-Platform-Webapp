@@ -5,6 +5,7 @@ import {
   LootRarity,
 } from "@prisma/client";
 import {
+  buildLootPoolDraft,
   computeLootGenerationProfile,
   generateEncounterMaterialDrops,
   generateLootPoolItems,
@@ -136,5 +137,50 @@ describe("generateEncounterMaterialDrops", () => {
     expect(items.some((item) => item.itemNameSnapshot === "Ancient Dragon Heart")).toBe(true);
     expect(items.some((item) => item.itemNameSnapshot === "Shadow Essence")).toBe(true);
     expect(items.every((item) => item.kindSnapshot === LootKind.TREASURE)).toBe(true);
+  });
+});
+
+describe("buildLootPoolDraft", () => {
+  it("builds a reusable preview draft without persisting data", () => {
+    const now = new Date("2026-04-09T12:00:00.000Z");
+    const draft = buildLootPoolDraft({
+      campaignId: "camp-1",
+      campaignName: "Ashes of Highcrest",
+      candidates: [
+        {
+          id: "rare-1",
+          name: "Sunforged Band",
+          rarity: LootRarity.RARE,
+          kind: LootKind.WONDROUS,
+          updatedAt: now,
+          goldValue: 500,
+        },
+        {
+          id: "common-1",
+          name: "Traveller's Cloak",
+          rarity: LootRarity.COMMON,
+          kind: LootKind.WONDROUS,
+          updatedAt: now,
+          goldValue: 25,
+        },
+      ],
+      characterLevels: [4, 5, 6],
+      encounter: null,
+      overrides: {
+        title: "Flooded gallery spoils",
+        sourceText: "Reward chest from the flooded gallery.",
+        partyLevel: 5,
+        difficulty: EncounterDifficulty.MEDIUM,
+        itemCount: 1,
+        includeMonsterMaterials: false,
+        notes: "Preview path only.",
+      },
+    });
+
+    expect(draft.title).toBe("Flooded gallery spoils");
+    expect(draft.sourceText).toBe("Reward chest from the flooded gallery.");
+    expect(draft.distributionMode).toBe("ASSIGN");
+    expect(draft.notes).toBe("Preview path only.");
+    expect(draft.items).toHaveLength(1);
   });
 });

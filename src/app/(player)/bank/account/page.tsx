@@ -4,13 +4,36 @@ import { redirect } from "next/navigation";
 import { getPlayerAccountBySession } from "@/lib/campaign-vault";
 import { formatCraftingMaterials, parseCraftingMaterials } from "@/lib/crafting-resolution";
 import { formatCopperAsGold, formatEnumLabel } from "@/lib/format";
+import {
+  formatLootAuditDate,
+  formatLootAuditHeadline,
+  getLootAuditSource,
+  getRecentLootAwardEntries,
+} from "@/lib/loot-audit";
+import {
+  buildLootHistorySections,
+  filterLootAwardsByDestination,
+  getLootHistoryDestinationCounts,
+  parseLootHistoryDestinationFilter,
+} from "@/lib/loot-history";
+import {
+  formatLootReservationDetail,
+  formatLootReservationHeadline,
+  getActiveLootReservations,
+} from "@/lib/loot-reservation-audit";
+import {
+  getPlayerLootItemProgress,
+  summarizePlayerLootPool,
+} from "@/lib/loot-progress";
 import { clearPlayerSession, getPlayerSession } from "@/lib/player-session";
 import {
   acceptQuestAction,
   logoutBankAction,
+  markLootClaimInterestAction,
   passOnLootPoolItemAction,
   replyToMailThreadAction,
   rollOnLootPoolItemAction,
+  withdrawLootClaimInterestAction,
 } from "../actions";
 
 type BankAccountPageProps = {
@@ -19,12 +42,15 @@ type BankAccountPageProps = {
     loot?: string;
     quest?: string;
     mail?: string;
+    historyScope?: string;
   }>;
 };
 
 const lootActionMessages: Record<string, string> = {
   rolled: "Your roll was recorded for that loot item.",
   passed: "You passed on that loot item.",
+  interested: "Your interest was recorded for that banked item.",
+  withdrawn: "Your interest was removed from that banked item.",
 };
 
 const questActionMessages: Record<string, string> = {
@@ -46,6 +72,29 @@ const lootErrorMessages: Record<string, string> = {
   "invalid-player-mail-state":
     "That mail reply could not be posted because the thread is no longer available to your character.",
 };
+
+function buildPlayerHistoryHref(input: {
+  params: Awaited<BankAccountPageProps["searchParams"]>;
+  historyScope: string;
+}) {
+  const next = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(input.params)) {
+    if (!value || key === "historyScope") {
+      continue;
+    }
+
+    next.set(key, value);
+  }
+
+  if (input.historyScope !== "all") {
+    next.set("historyScope", input.historyScope);
+  }
+
+  const query = next.toString();
+
+  return query ? `/bank/account?${query}` : "/bank/account";
+}
 
 export default async function BankAccountPage({ searchParams }: BankAccountPageProps) {
   const session = await getPlayerSession();
@@ -70,6 +119,53 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
   const errorMessage = params.error
     ? lootErrorMessages[params.error] ?? "Unable to save that loot response."
     : null;
+  const overallLootProgress = account.lootPools.reduce(
+    (summary, pool) => {
+      const poolSummary = summarizePlayerLootPool({
+        accountId: account.id,
+        actorName: account.name,
+        items: pool.items,
+      });
+
+      summary.actionNeeded += poolSummary.actionNeeded;
+      summary.awaitingResolution += poolSummary.awaitingResolution;
+      summary.reservedForYou += poolSummary.reservedForYou;
+      summary.assignedToYou += poolSummary.assignedToYou;
+      summary.banked += poolSummary.banked;
+
+      return summary;
+    },
+    {
+      actionNeeded: 0,
+      awaitingResolution: 0,
+      reservedForYou: 0,
+      assignedToYou: 0,
+      banked: 0,
+    },
+  );
+  const recentLootAwards = getRecentLootAwardEntries(account.ledgerEntries);
+  const historyScope = parseLootHistoryDestinationFilter(params.historyScope);
+  const historyCounts = getLootHistoryDestinationCounts(recentLootAwards);
+  const filteredRecentLootAwards = filterLootAwardsByDestination(recentLootAwards, historyScope);
+  const activeLootReservations = getActiveLootReservations(
+    account.lootPools.flatMap((pool) =>
+      pool.items.map((item) => ({
+        ...item,
+        lootPool: {
+          title: pool.title,
+          sourceText: pool.sourceText,
+          encounter: pool.encounter,
+        },
+      })),
+    ),
+  );
+  const myActiveReservations = activeLootReservations.filter(
+    (reservation) => reservation.reservedForName.toLowerCase() === account.name.toLowerCase(),
+  );
+  const lootHistorySections = buildLootHistorySections({
+    awards: filteredRecentLootAwards,
+    reservations: myActiveReservations,
+  });
 
   return (
     <main className="app-shell">
@@ -123,6 +219,18 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
           <span className="metric-label">Crafting jobs</span>
           <div className="metric-value">{account.campaign.craftingJobs.length}</div>
         </article>
+        <article className="metric-card">
+          <span className="metric-label">Loot actions</span>
+          <div className="metric-value">{overallLootProgress.actionNeeded}</div>
+        </article>
+        <article className="metric-card">
+          <span className="metric-label">Reserved for you</span>
+          <div className="metric-value">{overallLootProgress.reservedForYou}</div>
+        </article>
+        <article className="metric-card">
+          <span className="metric-label">Assigned to you</span>
+          <div className="metric-value">{overallLootProgress.assignedToYou}</div>
+        </article>
       </section>
 
       <section className="two-column-grid">
@@ -138,8 +246,15 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
           </div>
           <div className="card-stack">
             {account.lootPools.length > 0 ? (
-              account.lootPools.map((pool) => (
-                <div className="item-card" key={pool.id}>
+              account.lootPools.map((pool) => {
+                const poolSummary = summarizePlayerLootPool({
+                  accountId: account.id,
+                  actorName: account.name,
+                  items: pool.items,
+                });
+
+                return (
+                  <div className="item-card" key={pool.id}>
                   <div className="card-header">
                     <div>
                       <div className="value-line">{pool.title}</div>
@@ -151,11 +266,54 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                     </div>
                     <span className="tag">{formatEnumLabel(pool.status)}</span>
                   </div>
+                  <div className="tag-row">
+                    {poolSummary.actionNeeded > 0 ? (
+                      <span className="tag danger-tag">
+                        {poolSummary.actionNeeded} action needed
+                      </span>
+                    ) : null}
+                    {poolSummary.awaitingResolution > 0 ? (
+                      <span className="tag">
+                        {poolSummary.awaitingResolution} awaiting resolution
+                      </span>
+                    ) : null}
+                    {poolSummary.reservedForYou > 0 ? (
+                      <span className="tag">
+                        {poolSummary.reservedForYou} reserved for you
+                      </span>
+                    ) : null}
+                    {poolSummary.assignedToYou > 0 ? (
+                      <span className="tag">
+                        {poolSummary.assignedToYou} assigned to you
+                      </span>
+                    ) : null}
+                    {poolSummary.banked > 0 ? (
+                      <span className="tag">
+                        {poolSummary.banked} banked for later
+                      </span>
+                    ) : null}
+                    {poolSummary.claimInterest > 0 ? (
+                      <span className="tag">
+                        {poolSummary.claimInterest} marked by you
+                      </span>
+                    ) : null}
+                    {poolSummary.actionNeeded === 0 &&
+                    poolSummary.awaitingResolution === 0 &&
+                    poolSummary.reservedForYou === 0 &&
+                    poolSummary.assignedToYou === 0 &&
+                    poolSummary.banked === 0 &&
+                    poolSummary.claimInterest === 0 ? (
+                      <span className="tag">No open actions in this pool</span>
+                    ) : null}
+                  </div>
                   <div className="card-stack">
                     {pool.items.map((item) => {
-                      const myRoll = item.rollEntries.find(
-                        (entry) => entry.characterId === account.id,
-                      );
+                      const progress = getPlayerLootItemProgress({
+                        accountId: account.id,
+                        actorName: account.name,
+                        item,
+                      });
+                      const myRoll = progress.myRoll;
                       const canRespond =
                         item.status === "UNRESOLVED" &&
                         item.distributionMode === "ROLL" &&
@@ -174,12 +332,9 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                             <span className="tag">{formatEnumLabel(item.status)}</span>
                           </div>
                           <p className="muted">
-                            {item.awardedCharacter
-                              ? `Assigned to ${item.awardedCharacter.name}`
-                              : item.status === "BANKED"
-                                ? "Held for later party distribution"
-                                : "Still unresolved"}
+                            {progress.headline}
                           </p>
+                          <p className="muted">{progress.detail}</p>
                           {myRoll ? (
                             <p className="muted">
                               Your roll: {myRoll.rollTotal ?? "not rolled"} · {formatEnumLabel(myRoll.status)}
@@ -191,6 +346,25 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                             </p>
                           ) : null}
                           {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
+                          {progress.key === "banked" && !progress.reservedForName ? (
+                            <div className="button-row">
+                              {progress.hasClaimInterest ? (
+                                <form action={withdrawLootClaimInterestAction}>
+                                  <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                  <button className="pill-button" type="submit">
+                                    Withdraw interest
+                                  </button>
+                                </form>
+                              ) : (
+                                <form action={markLootClaimInterestAction}>
+                                  <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                  <button className="button-secondary" type="submit">
+                                    Mark interest
+                                  </button>
+                                </form>
+                              )}
+                            </div>
+                          ) : null}
                           {canRespond ? (
                             <div className="button-row">
                               <form action={rollOnLootPoolItemAction}>
@@ -216,8 +390,9 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                       );
                     })}
                   </div>
-                </div>
-              ))
+                  </div>
+                );
+              })
             ) : (
               <div className="callout">No shared loot pools are active right now.</div>
             )}
@@ -258,30 +433,133 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
             <div>
               <span className="section-kicker">
                 <ScrollText size={14} />
-                Recent transactions
+                Recent loot
               </span>
-              <h2>What changed recently</h2>
+              <h2>Recent deliveries</h2>
             </div>
           </div>
-          {account.ledgerEntries.length > 0 ? (
+          <div className="tag-row">
+            <Link className="tag" href={buildPlayerHistoryHref({ params, historyScope: "all" })}>
+              All {historyCounts.all}
+            </Link>
+            <Link className="tag" href={buildPlayerHistoryHref({ params, historyScope: "bank" })}>
+              Bank {historyCounts.bank}
+            </Link>
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({ params, historyScope: "inventory" })}
+            >
+              Inventory {historyCounts.inventory}
+            </Link>
+          </div>
+          {filteredRecentLootAwards.length > 0 ? (
             <div className="list-card">
-              {account.ledgerEntries.slice(0, 8).map((entry) => (
+              {filteredRecentLootAwards.slice(0, 8).map((entry) => (
                 <div className="list-item" key={entry.id}>
+                  {(() => {
+                    const source = getLootAuditSource(entry);
+
+                    return (
+                      <>
                   <div className="card-header">
-                    <strong>{formatEnumLabel(entry.scope)}</strong>
-                    <span className="tag">{formatEnumLabel(entry.entryType)}</span>
+                    <strong>{formatLootAuditHeadline(entry)}</strong>
+                    <span className="tag">{formatLootAuditDate(entry.createdAt)}</span>
+                  </div>
+                  <div className="tag-row">
+                    <span className="tag">{source.label}</span>
+                    {source.detail ? <span className="tag">{source.detail}</span> : null}
                   </div>
                   <div className="muted">
-                    {entry.lootItem ? `${entry.lootItem.name} × ${entry.quantity}` : "Gold movement"} ·{" "}
-                    {formatCopperAsGold(entry.goldDelta)}
+                    {entry.scope === "BANK" ? "Bank" : "Inventory"}
+                    {entry.goldDelta ? ` · ${formatCopperAsGold(entry.goldDelta)}` : ""}
                   </div>
                   <p>{entry.note}</p>
+                      </>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
           ) : (
-            <div className="callout">No ledger activity has been recorded yet.</div>
+            <div className="callout">No loot deliveries have been recorded yet.</div>
           )}
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <ScrollText size={14} />
+                Reservation watch
+              </span>
+              <h2>Your reserved items</h2>
+            </div>
+          </div>
+          {myActiveReservations.length > 0 ? (
+            <div className="list-card">
+              {myActiveReservations.slice(0, 8).map((reservation) => (
+                <div className="list-item" key={reservation.id}>
+                  <div className="card-header">
+                    <strong>{formatLootReservationHeadline(reservation)}</strong>
+                    <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
+                  </div>
+                  <div className="tag-row">
+                    <span className="tag">Reserved for you</span>
+                    {reservation.claimInterestNames.length > 0 ? (
+                      <span className="tag">{reservation.claimInterestNames.length} interested</span>
+                    ) : null}
+                  </div>
+                  <div className="muted">{formatLootReservationDetail(reservation)}</div>
+                  <p>{reservation.detail}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="callout">No banked loot is currently reserved for you.</div>
+          )}
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <ScrollText size={14} />
+                History lanes
+              </span>
+              <h2>Grouped loot history</h2>
+            </div>
+          </div>
+          <div className="card-stack">
+            {lootHistorySections.map((section) => (
+              <div className="list-card" key={section.key}>
+                <div className="card-header">
+                  <strong>{section.title}</strong>
+                  <span className="tag">{section.count}</span>
+                </div>
+                {section.items.length > 0 ? (
+                  section.items.slice(0, 3).map((item) => (
+                    <div className="list-item" key={item.id}>
+                      <div className="card-header">
+                        <strong>{item.headline}</strong>
+                        <span className="tag">{formatLootAuditDate(item.happenedAt)}</span>
+                      </div>
+                      <div className="tag-row">
+                        {item.tags.map((tag) => (
+                          <span className="tag" key={`${item.id}-${tag}`}>
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="muted">{item.detail}</div>
+                      <p>{item.note}</p>
+                    </div>
+                  ))
+                ) : (
+                  <div className="callout">No entries in this lane yet.</div>
+                )}
+              </div>
+            ))}
+          </div>
         </article>
       </section>
 

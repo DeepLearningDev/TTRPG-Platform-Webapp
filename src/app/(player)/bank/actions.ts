@@ -18,6 +18,7 @@ import {
   normalizeCharacterNameKey,
 } from "@/lib/bank-security";
 import { isMailThreadVisibleToCharacter } from "@/lib/campaign-vault";
+import { toggleLootClaimInterest } from "@/lib/loot-progress";
 import {
   clearPlayerSession,
   getPlayerSession,
@@ -209,16 +210,24 @@ async function requirePlayerMutationContext() {
       campaign: {
         status: CampaignStatus.ACTIVE,
       },
+      bankAccess: {
+        isNot: null,
+      },
     },
     select: {
       id: true,
       campaignId: true,
       name: true,
       playerName: true,
+      bankAccess: {
+        select: {
+          id: true,
+        },
+      },
     },
   });
 
-  if (!character) {
+  if (!character?.bankAccess) {
     await clearPlayerSession();
     redirect("/bank");
   }
@@ -321,6 +330,98 @@ export async function passOnLootPoolItemAction(formData: FormData) {
   await createPlayerLootPoolResponse({
     lootPoolItemId: payload.lootPoolItemId,
     response: "PASSED",
+  });
+}
+
+async function updateLootClaimInterest(input: {
+  lootPoolItemId: string;
+  interested: boolean;
+}) {
+  const character = await requirePlayerMutationContext();
+
+  const result = await prisma.$transaction(async (tx) => {
+    const lootPoolItem = await tx.lootPoolItem.findFirst({
+      where: {
+        id: input.lootPoolItemId,
+        status: LootPoolItemStatus.BANKED,
+        distributionMode: LootDistributionMode.BANK,
+        awardedCharacterId: null,
+        lootPool: {
+          campaignId: character.campaignId,
+          status: {
+            in: [LootPoolStatus.OPEN, LootPoolStatus.BANKED],
+          },
+        },
+      },
+      select: {
+        id: true,
+        resolutionMetadata: true,
+      },
+    });
+
+    if (!lootPoolItem) {
+      return {
+        ok: false as const,
+      };
+    }
+
+    await tx.lootPoolItem.update({
+      where: {
+        id: lootPoolItem.id,
+      },
+      data: {
+        resolutionMetadata: toggleLootClaimInterest({
+          metadata: lootPoolItem.resolutionMetadata,
+          actorName: character.name,
+          interested: input.interested,
+        }),
+      },
+    });
+
+    return {
+      ok: true as const,
+    };
+  });
+
+  if (!result.ok) {
+    redirectToPlayerAccountError("invalid-loot-pool-state");
+  }
+
+  redirectToPlayerAccountResult(
+    "loot",
+    input.interested ? "interested" : "withdrawn",
+  );
+}
+
+export async function markLootClaimInterestAction(formData: FormData) {
+  const parsedPayload = lootPoolPlayerMutationSchema.safeParse({
+    lootPoolItemId: formData.get("lootPoolItemId"),
+  });
+  const payload = parsedPayload.success ? parsedPayload.data : null;
+
+  if (!payload) {
+    redirectToPlayerAccountError("invalid-loot-pool-state");
+  }
+
+  await updateLootClaimInterest({
+    lootPoolItemId: payload.lootPoolItemId,
+    interested: true,
+  });
+}
+
+export async function withdrawLootClaimInterestAction(formData: FormData) {
+  const parsedPayload = lootPoolPlayerMutationSchema.safeParse({
+    lootPoolItemId: formData.get("lootPoolItemId"),
+  });
+  const payload = parsedPayload.success ? parsedPayload.data : null;
+
+  if (!payload) {
+    redirectToPlayerAccountError("invalid-loot-pool-state");
+  }
+
+  await updateLootClaimInterest({
+    lootPoolItemId: payload.lootPoolItemId,
+    interested: false,
   });
 }
 

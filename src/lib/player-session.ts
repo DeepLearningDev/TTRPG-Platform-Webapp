@@ -24,7 +24,15 @@ function isSessionPayload(value: unknown): value is SessionPayload {
 }
 
 function getSecret() {
-  return process.env.PLAYER_SESSION_SECRET ?? "campaign-vault-local-secret";
+  if (process.env.PLAYER_SESSION_SECRET) {
+    return process.env.PLAYER_SESSION_SECRET;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("PLAYER_SESSION_SECRET must be set in production");
+  }
+
+  return "campaign-vault-local-secret";
 }
 
 function toBase64Url(value: string) {

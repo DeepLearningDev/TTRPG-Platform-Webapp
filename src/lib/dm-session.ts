@@ -10,11 +10,15 @@ type SessionPayload = {
 };
 
 function getSecret() {
-  return (
-    process.env.DM_SESSION_SECRET ??
-    process.env.PLAYER_SESSION_SECRET ??
-    "campaign-vault-local-dm-secret"
-  );
+  if (process.env.DM_SESSION_SECRET) {
+    return process.env.DM_SESSION_SECRET;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("DM_SESSION_SECRET must be set in production");
+  }
+
+  return "campaign-vault-local-dm-secret";
 }
 
 function getConfiguredUsername() {

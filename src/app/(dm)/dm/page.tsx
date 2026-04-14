@@ -22,8 +22,33 @@ import {
   formatCopperAsGold,
   formatDifficultyLabel,
   formatEnumLabel,
+  formatHoldingScopeLabel,
   splitTags,
 } from "@/lib/format";
+import { buildLootPoolDraft } from "@/lib/loot-generation";
+import {
+  parseLootClaimInterestNames,
+  parseLootReservedCharacterName,
+  prioritizeInterestedCharacters,
+} from "@/lib/loot-progress";
+import {
+  formatLootAuditDate,
+  formatLootAuditDetail,
+  formatLootAuditHeadline,
+  getLootAuditSource,
+  getRecentLootAwardEntries,
+} from "@/lib/loot-audit";
+import {
+  buildLootHistorySections,
+  filterLootAwardsByDestination,
+  getLootHistoryDestinationCounts,
+  parseLootHistoryDestinationFilter,
+} from "@/lib/loot-history";
+import {
+  formatLootReservationDetail,
+  formatLootReservationHeadline,
+  getActiveLootReservations,
+} from "@/lib/loot-reservation-audit";
 import {
   assignLootPoolItemAction,
   archiveNpcAction,
@@ -47,6 +72,7 @@ import {
   recordStorefrontSaleAction,
   logoutDmAction,
   replyMailThreadAction,
+  reserveLootPoolItemAction,
   rollLootPoolItemAction,
   syncCompendiumAction,
   updateCharacterAction,
@@ -62,8 +88,59 @@ type DmPageProps = {
     sync?: string;
     source?: string;
     error?: string;
+    preview?: string;
+    encounterId?: string;
+    title?: string;
+    sourceText?: string;
+    partyLevel?: string;
+    difficulty?: EncounterDifficulty;
+    itemCount?: string;
+    includeMonsterMaterials?: string;
+    notes?: string;
+    historyScope?: string;
   }>;
 };
+
+function readOptionalSearchText(value?: string) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function readOptionalSearchNumber(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readSearchBoolean(value?: string) {
+  return value === "true" || value === "on" || value === "1";
+}
+
+function buildDmHistoryHref(input: {
+  params: Awaited<DmPageProps["searchParams"]>;
+  historyScope: string;
+}) {
+  const next = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(input.params)) {
+    if (!value || key === "historyScope") {
+      continue;
+    }
+
+    next.set(key, value);
+  }
+
+  if (input.historyScope !== "all") {
+    next.set("historyScope", input.historyScope);
+  }
+
+  const query = next.toString();
+
+  return query ? `/dm?${query}` : "/dm";
+}
 
 const dmErrorMessages: Record<string, string> = {
   "invalid-campaign-state":
@@ -136,6 +213,41 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     craftingRecipes,
     craftingJobs,
   } = data;
+  const previewEncounterId = readOptionalSearchText(params.encounterId);
+  const previewEncounter =
+    previewEncounterId
+      ? campaign.encounters.find((encounter) => encounter.id === previewEncounterId) ?? null
+      : null;
+  const defaultLootDifficulty =
+    params.preview === "loot" && params.difficulty
+      ? params.difficulty
+      : EncounterDifficulty.MEDIUM;
+  const lootDraftPreview =
+    params.preview === "loot" &&
+    (!previewEncounterId || previewEncounter)
+      ? buildLootPoolDraft({
+          campaignId: campaign.id,
+          campaignName: campaign.name,
+          candidates: campaign.lootItems,
+          characterLevels: campaign.characters.map((character) => character.level),
+          encounter: previewEncounter,
+          overrides: {
+            title: readOptionalSearchText(params.title),
+            sourceText: readOptionalSearchText(params.sourceText),
+            partyLevel: readOptionalSearchNumber(params.partyLevel),
+            difficulty: defaultLootDifficulty,
+            itemCount: readOptionalSearchNumber(params.itemCount),
+            includeMonsterMaterials: readSearchBoolean(params.includeMonsterMaterials),
+            notes: readOptionalSearchText(params.notes),
+          },
+        })
+      : null;
+  const lootPreviewErrorMessage =
+    params.preview === "loot" && previewEncounterId && !previewEncounter
+      ? "That encounter preview no longer matches this campaign."
+      : lootDraftPreview && lootDraftPreview.items.length === 0
+        ? "No previewable loot items matched that draft."
+        : null;
   const defaultPartyLevel = Math.max(
     1,
     Math.round(
@@ -143,6 +255,26 @@ export default async function DmPage({ searchParams }: DmPageProps) {
         Math.max(1, partySummaries.length),
     ),
   );
+  const recentLootAwards = getRecentLootAwardEntries(campaign.ledgerEntries);
+  const historyScope = parseLootHistoryDestinationFilter(params.historyScope);
+  const historyCounts = getLootHistoryDestinationCounts(recentLootAwards);
+  const filteredRecentLootAwards = filterLootAwardsByDestination(recentLootAwards, historyScope);
+  const activeLootReservations = getActiveLootReservations(
+    lootPools.flatMap((pool) =>
+      pool.items.map((item) => ({
+        ...item,
+        lootPool: {
+          title: pool.title,
+          sourceText: pool.sourceText,
+          encounter: pool.encounter,
+        },
+      })),
+    ),
+  );
+  const lootHistorySections = buildLootHistorySections({
+    awards: filteredRecentLootAwards,
+    reservations: activeLootReservations,
+  });
   const openQuests = quests.filter((quest) => quest.status !== QuestStatus.COMPLETE);
   const activeStorefronts = storefronts.filter(
     (storefront) => storefront.status === StorefrontStatus.ACTIVE,
@@ -642,10 +774,12 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           <form action={generateLootPoolAction} className="stack-form">
             <input type="hidden" name="campaignId" value={campaign.id} />
             <input type="hidden" name="campaignSlug" value={campaign.slug} />
+            <input type="hidden" name="campaign" value={campaign.slug} />
+            <input type="hidden" name="preview" value="loot" />
             <div className="subgrid">
               <label className="field-label">
                 Encounter source
-                <select name="encounterId" defaultValue="">
+                <select name="encounterId" defaultValue={previewEncounterId ?? ""}>
                   <option value="">Manual reward event</option>
                   {campaign.encounters.map((encounter) => (
                     <option key={encounter.id} value={encounter.id}>
@@ -657,12 +791,18 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               </label>
               <label className="field-label">
                 Reward title
-                <input name="title" placeholder="Sunken shrine spoils" />
+                <input
+                  defaultValue={params.preview === "loot" ? params.title ?? "" : ""}
+                  name="title"
+                  placeholder="Sunken shrine spoils"
+                />
               </label>
               <label className="field-label">
                 Party level
                 <input
-                  defaultValue={defaultPartyLevel}
+                  defaultValue={
+                    params.preview === "loot" ? params.partyLevel ?? String(defaultPartyLevel) : defaultPartyLevel
+                  }
                   max="20"
                   min="1"
                   name="partyLevel"
@@ -671,7 +811,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               </label>
               <label className="field-label">
                 Difficulty
-                <select name="difficulty" defaultValue={EncounterDifficulty.MEDIUM}>
+                <select name="difficulty" defaultValue={defaultLootDifficulty}>
                   {Object.values(EncounterDifficulty).map((difficulty) => (
                     <option key={difficulty} value={difficulty}>
                       {formatDifficultyLabel(difficulty)}
@@ -683,27 +823,94 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             <div className="subgrid">
               <label className="field-label">
                 Pool note
-                <input name="sourceText" placeholder="Reward chest from the flooded gallery." />
+                <input
+                  defaultValue={params.preview === "loot" ? params.sourceText ?? "" : ""}
+                  name="sourceText"
+                  placeholder="Reward chest from the flooded gallery."
+                />
               </label>
               <label className="field-label">
                 Item count
-                <input defaultValue="2" max="4" min="1" name="itemCount" type="number" />
+                <input
+                  defaultValue={params.preview === "loot" ? params.itemCount ?? "2" : "2"}
+                  max="4"
+                  min="1"
+                  name="itemCount"
+                  type="number"
+                />
               </label>
             </div>
             <label className="field-label">
               <span>Monster material drops</span>
-              <input defaultChecked name="includeMonsterMaterials" type="checkbox" value="true" />
+              <input
+                defaultChecked={
+                  params.preview === "loot"
+                    ? readSearchBoolean(params.includeMonsterMaterials)
+                    : true
+                }
+                name="includeMonsterMaterials"
+                type="checkbox"
+                value="true"
+              />
             </label>
             <label className="field-label">
               Notes
-              <textarea name="notes" placeholder="Why this pool exists or any special handling." />
+              <textarea
+                defaultValue={params.preview === "loot" ? params.notes ?? "" : ""}
+                name="notes"
+                placeholder="Why this pool exists or any special handling."
+              />
             </label>
             <div className="button-row">
+              <button className="pill-button" formAction="/dm" formMethod="get" type="submit">
+                Preview draft
+              </button>
               <button className="button-secondary" type="submit">
                 Generate loot pool
               </button>
+              {params.preview === "loot" ? (
+                <Link className="nav-link" href={`/dm?campaign=${campaign.slug}`}>
+                  Clear preview
+                </Link>
+              ) : null}
             </div>
           </form>
+
+          {lootPreviewErrorMessage ? <p className="error-banner">{lootPreviewErrorMessage}</p> : null}
+          {lootDraftPreview && !lootPreviewErrorMessage ? (
+            <div className="item-card">
+              <div className="card-header">
+                <div>
+                  <span className="section-kicker">Preview Only</span>
+                  <div className="value-line">{lootDraftPreview.title}</div>
+                  <div className="muted">{lootDraftPreview.sourceText}</div>
+                </div>
+                <span className="tag">{lootDraftPreview.distributionMode === "ROLL" ? "Roll Draft" : "Assign Draft"}</span>
+              </div>
+              <p>
+                Party level {lootDraftPreview.partyLevel} · {formatDifficultyLabel(lootDraftPreview.difficulty)} ·{" "}
+                {lootDraftPreview.items.length} item{lootDraftPreview.items.length === 1 ? "" : "s"}
+              </p>
+              {lootDraftPreview.notes ? <p className="muted">{lootDraftPreview.notes}</p> : null}
+              <div className="list-card">
+                {lootDraftPreview.items.map((item, index) => (
+                  <div className="list-item" key={`${item.itemNameSnapshot}-${index}`}>
+                    <div className="card-header">
+                      <strong>{item.itemNameSnapshot}</strong>
+                      <span className="tag">× {item.quantity}</span>
+                    </div>
+                    <p className="muted">
+                      {formatEnumLabel(item.raritySnapshot)} · {formatEnumLabel(item.kindSnapshot)}
+                    </p>
+                    {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
+                  </div>
+                ))}
+              </div>
+              <p className="callout">
+                Preview only. Nothing is saved until you run Generate loot pool.
+              </p>
+            </div>
+          ) : null}
 
           <div className="panel-header">
             <div>
@@ -735,6 +942,28 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                   <div className="list-card">
                     {pool.items.map((item) => (
                       <div className="list-item" key={item.id}>
+                        {(() => {
+                          const claimInterestNames = parseLootClaimInterestNames(item.resolutionMetadata);
+                          const reservedCharacterName = parseLootReservedCharacterName(item.resolutionMetadata);
+                          const reservedCharacter =
+                            reservedCharacterName
+                              ? partySummaries.find(
+                                  (character) =>
+                                    character.name.toLowerCase() === reservedCharacterName.toLowerCase(),
+                                ) ?? null
+                              : null;
+                          const { interestedCharacters, orderedCharacters: assignmentOptions } =
+                            prioritizeInterestedCharacters({
+                              names: claimInterestNames,
+                              characters: partySummaries,
+                            });
+                          const defaultAssigneeId =
+                            reservedCharacter?.id ??
+                            interestedCharacters[0]?.id ??
+                            partySummaries[0]?.id;
+
+                          return (
+                            <>
                         <div className="card-header">
                           <div>
                             <strong>{item.itemNameSnapshot}</strong>
@@ -749,7 +978,105 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                           <p className="muted">This pool item will become a loot record when it is assigned, rolled, or banked.</p>
                         ) : null}
                         {item.awardedCharacter ? (
-                          <p className="muted">Assigned to {item.awardedCharacter.name}</p>
+                          <p className="muted">
+                            Assigned to {item.awardedCharacter.name}
+                            {item.resolutionScope ? ` · ${formatHoldingScopeLabel(item.resolutionScope)}` : ""}
+                          </p>
+                        ) : null}
+                        {claimInterestNames.length > 0 ? (
+                          <div className="tag-row">
+                            {claimInterestNames.map((name) => (
+                              <span className="tag" key={name}>
+                                Interested: {name}
+                              </span>
+                            ))}
+                            {reservedCharacterName ? (
+                              <span className="tag">Reserved: {reservedCharacterName}</span>
+                            ) : null}
+                          </div>
+                        ) : reservedCharacterName ? (
+                          <div className="tag-row">
+                            <span className="tag">Reserved: {reservedCharacterName}</span>
+                          </div>
+                        ) : null}
+                        {item.status === "BANKED" &&
+                        (assignmentOptions.length > 0 || reservedCharacterName) ? (
+                          <div className="card-stack">
+                              <div className="list-card">
+                                <div className="card-header">
+                                  <strong>
+                                    {reservedCharacterName
+                                      ? `Reserved for ${reservedCharacterName}`
+                                      : "Reserve claim"}
+                                  </strong>
+                                  <span className="tag">
+                                    {reservedCharacterName ? "Reservation active" : "Optional hold"}
+                                  </span>
+                                </div>
+                                <form action={reserveLootPoolItemAction} className="stack-form">
+                                  <input type="hidden" name="campaignId" value={campaign.id} />
+                                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                                  <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                  <label className="field-label">
+                                    Reserve for
+                                    <select
+                                      name="characterId"
+                                      defaultValue={reservedCharacter?.id ?? defaultAssigneeId}
+                                    >
+                                      {assignmentOptions.map((character) => (
+                                        <option key={character.id} value={character.id}>
+                                          {character.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  <div className="button-row">
+                                    <button className="button-secondary" type="submit">
+                                      Reserve item
+                                    </button>
+                                    {reservedCharacterName ? (
+                                      <button className="pill-button" name="characterId" value="" type="submit">
+                                        Clear reservation
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                </form>
+                                {reservedCharacter ? (
+                                  <div className="button-row">
+                                    <form action={assignLootPoolItemAction}>
+                                      <input type="hidden" name="campaignId" value={campaign.id} />
+                                      <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                                      <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                      <input type="hidden" name="characterId" value={reservedCharacter.id} />
+                                      <input type="hidden" name="scope" value={HoldingScope.BANK} />
+                                      <input
+                                        type="hidden"
+                                        name="note"
+                                        value={`Approved ${reservedCharacter.name}'s claim and sent item to Bank.`}
+                                      />
+                                      <button className="button-secondary" type="submit">
+                                        Approve to bank
+                                      </button>
+                                    </form>
+                                    <form action={assignLootPoolItemAction}>
+                                      <input type="hidden" name="campaignId" value={campaign.id} />
+                                      <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                                      <input type="hidden" name="lootPoolItemId" value={item.id} />
+                                      <input type="hidden" name="characterId" value={reservedCharacter.id} />
+                                      <input type="hidden" name="scope" value={HoldingScope.INVENTORY} />
+                                      <input
+                                        type="hidden"
+                                        name="note"
+                                        value={`Approved ${reservedCharacter.name}'s claim and sent item to Inventory.`}
+                                      />
+                                      <button className="pill-button" type="submit">
+                                        Approve to inventory
+                                      </button>
+                                    </form>
+                                  </div>
+                                ) : null}
+                              </div>
+                          </div>
                         ) : null}
                         {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
                         {item.rollEntries.length > 0 ? (
@@ -771,10 +1098,15 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                               <div className="subgrid">
                                 <label className="field-label">
                                   Assign to
-                                  <select name="characterId" defaultValue={partySummaries[0]?.id}>
-                                    {partySummaries.map((character) => (
+                                  <select name="characterId" defaultValue={defaultAssigneeId}>
+                                    {assignmentOptions.map((character) => (
                                       <option key={character.id} value={character.id}>
                                         {character.name}
+                                        {claimInterestNames.some(
+                                          (name) => name.toLowerCase() === character.name.toLowerCase(),
+                                        )
+                                          ? " · interested"
+                                          : ""}
                                       </option>
                                     ))}
                                   </select>
@@ -789,7 +1121,14 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                               </div>
                               <label className="field-label">
                                 Note
-                                <input name="note" placeholder="Direct award note" />
+                                <input
+                                  name="note"
+                                  placeholder={
+                                    interestedCharacters.length > 0
+                                      ? "Approve an interested player or override."
+                                      : "Direct award note"
+                                  }
+                                />
                               </label>
                               <div className="button-row">
                                 <button className="button-secondary" type="submit">
@@ -838,6 +1177,9 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                             </form>
                           </div>
                         ) : null}
+                            </>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>
@@ -949,21 +1291,118 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             </div>
           </form>
 
+          <div className="tag-row">
+            <Link className="tag" href={buildDmHistoryHref({ params, historyScope: "all" })}>
+              All {historyCounts.all}
+            </Link>
+            <Link className="tag" href={buildDmHistoryHref({ params, historyScope: "bank" })}>
+              Bank {historyCounts.bank}
+            </Link>
+            <Link className="tag" href={buildDmHistoryHref({ params, historyScope: "inventory" })}>
+              Inventory {historyCounts.inventory}
+            </Link>
+          </div>
           <div className="list-card">
-            {campaign.ledgerEntries.map((entry) => (
+            {filteredRecentLootAwards.map((entry) => (
               <div className="list-item" key={entry.id}>
+                {(() => {
+                  const source = getLootAuditSource(entry);
+
+                  return (
+                    <>
                 <div className="card-header">
-                  <strong>{entry.character.name}</strong>
-                  <span className="tag">{formatEnumLabel(entry.scope)}</span>
+                  <strong>{formatLootAuditHeadline(entry)}</strong>
+                  <span className="tag">{formatLootAuditDate(entry.createdAt)}</span>
+                </div>
+                <div className="tag-row">
+                  <span className="tag">{source.label}</span>
+                  {source.detail ? <span className="tag">{source.detail}</span> : null}
                 </div>
                 <div className="muted">
-                  {entry.lootItem ? `${entry.lootItem.name} × ${entry.quantity}` : "Gold only"} ·{" "}
-                  {formatCopperAsGold(entry.goldDelta)}
+                  {formatLootAuditDetail(entry)}
+                  {entry.goldDelta ? ` · ${formatCopperAsGold(entry.goldDelta)}` : ""}
                 </div>
                 <p>{entry.note}</p>
+                    </>
+                  );
+                })()}
               </div>
             ))}
           </div>
+
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <ScrollText size={14} />
+                History lanes
+              </span>
+              <h3>Grouped loot history</h3>
+            </div>
+          </div>
+          <div className="card-stack">
+            {lootHistorySections.map((section) => (
+              <div className="list-card" key={section.key}>
+                <div className="card-header">
+                  <strong>{section.title}</strong>
+                  <span className="tag">{section.count}</span>
+                </div>
+                {section.items.length > 0 ? (
+                  section.items.slice(0, 3).map((item) => (
+                    <div className="list-item" key={item.id}>
+                      <div className="card-header">
+                        <strong>{item.headline}</strong>
+                        <span className="tag">{formatLootAuditDate(item.happenedAt)}</span>
+                      </div>
+                      <div className="tag-row">
+                        {item.tags.map((tag) => (
+                          <span className="tag" key={`${item.id}-${tag}`}>
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="muted">{item.detail}</div>
+                      <p>{item.note}</p>
+                    </div>
+                  ))
+                ) : (
+                  <div className="callout">No entries in this lane yet.</div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <ScrollText size={14} />
+                Reservation watch
+              </span>
+              <h3>Active reservations</h3>
+            </div>
+          </div>
+          {activeLootReservations.length > 0 ? (
+            <div className="list-card">
+              {activeLootReservations.slice(0, 8).map((reservation) => (
+                <div className="list-item" key={reservation.id}>
+                  <div className="card-header">
+                    <strong>{formatLootReservationHeadline(reservation)}</strong>
+                    <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
+                  </div>
+                  <div className="tag-row">
+                    <span className="tag">Reserved</span>
+                    <span className="tag">{reservation.reservedForName}</span>
+                    {reservation.claimInterestNames.length > 0 ? (
+                      <span className="tag">{reservation.claimInterestNames.length} interested</span>
+                    ) : null}
+                  </div>
+                  <div className="muted">{formatLootReservationDetail(reservation)}</div>
+                  <p>{reservation.detail}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="callout">No banked loot is reserved right now.</div>
+          )}
         </article>
       </section>
 

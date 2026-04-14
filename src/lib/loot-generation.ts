@@ -1,11 +1,11 @@
 import { EncounterDifficulty, LootItem, LootKind, LootRarity } from "@prisma/client";
 
-type LootCandidate = Pick<
+export type LootCandidate = Pick<
   LootItem,
   "id" | "name" | "rarity" | "kind" | "updatedAt" | "goldValue"
 >;
 
-type GeneratedLootPoolItem = {
+export type GeneratedLootPoolItem = {
   lootItemId: string | null;
   itemNameSnapshot: string;
   raritySnapshot: LootRarity;
@@ -32,6 +32,31 @@ type PartyRollResult = {
   winner: PartyRollCharacter;
   rolls: Array<PartyRollCharacter & { roll: number }>;
   summary: string;
+};
+
+export type LootPoolDraftEncounter = {
+  id: string;
+  title: string;
+  difficulty: EncounterDifficulty;
+  partyLevel: number;
+  monsters: Array<{
+    quantity: number;
+    monster: Pick<
+      EncounterMaterialMonster,
+      "name" | "monsterType" | "tags" | "specialDrops"
+    >;
+  }>;
+};
+
+export type LootPoolDraft = {
+  encounterId: string | null;
+  title: string;
+  sourceText: string;
+  notes: string | null;
+  partyLevel: number;
+  difficulty: EncounterDifficulty;
+  distributionMode: "ASSIGN" | "ROLL";
+  items: GeneratedLootPoolItem[];
 };
 
 const RARITY_RANK: Record<LootRarity, number> = {
@@ -401,5 +426,109 @@ export function runPartyLootRoll(
     winner,
     rolls,
     summary: `Roll-off: ${summary}. Winner: ${winner.name}.`,
+  };
+}
+
+export function buildLootPoolDraft(input: {
+  campaignId: string;
+  campaignName: string;
+  candidates: LootCandidate[];
+  characterLevels: number[];
+  encounter: LootPoolDraftEncounter | null;
+  overrides: {
+    title?: string;
+    sourceText?: string;
+    partyLevel?: number;
+    difficulty?: EncounterDifficulty;
+    itemCount?: number;
+    includeMonsterMaterials?: boolean;
+    notes?: string;
+  };
+}): LootPoolDraft {
+  const fallbackPartyLevel =
+    input.characterLevels.length > 0
+      ? Math.max(
+          1,
+          Math.round(
+            input.characterLevels.reduce((sum, level) => sum + level, 0) /
+              input.characterLevels.length,
+          ),
+        )
+      : 1;
+
+  const resolvedPartyLevel =
+    input.overrides.partyLevel ?? input.encounter?.partyLevel ?? fallbackPartyLevel;
+  const resolvedDifficulty =
+    input.overrides.difficulty ?? input.encounter?.difficulty ?? EncounterDifficulty.MEDIUM;
+  const resolvedTitle =
+    input.overrides.title?.trim() ||
+    input.encounter?.title ||
+    `${input.campaignName} reward pool`;
+  const resolvedSourceText =
+    input.overrides.sourceText?.trim() ||
+    (input.encounter
+      ? `Encounter reward for ${input.encounter.title}.`
+      : "Generated reward pool.");
+  const notes = input.overrides.notes?.trim() || null;
+  const seedKey =
+    input.encounter?.id ??
+    `${resolvedTitle}|${resolvedSourceText}|${notes ?? ""}|${resolvedPartyLevel}|${resolvedDifficulty}`;
+  const requestedItemCount =
+    input.overrides.itemCount ??
+    computeLootGenerationProfile(resolvedPartyLevel, resolvedDifficulty).itemCount;
+  const materialItemBudget =
+    input.encounter && input.overrides.includeMonsterMaterials
+      ? Math.min(
+          requestedItemCount,
+          resolvedDifficulty === EncounterDifficulty.BOSS ? 2 : 1,
+        )
+      : 0;
+  const materialItems =
+    input.encounter && materialItemBudget > 0
+      ? generateEncounterMaterialDrops({
+          seedKey,
+          difficulty: resolvedDifficulty,
+          candidates: input.candidates,
+          monsters: input.encounter.monsters.map((slot) => ({
+            name: slot.monster.name,
+            monsterType: slot.monster.monsterType,
+            tags: slot.monster.tags,
+            specialDrops: slot.monster.specialDrops,
+            quantity: slot.quantity,
+          })),
+          maxItems: materialItemBudget,
+        })
+      : [];
+  const materialItemNames = new Set(
+    materialItems.map((item) => item.itemNameSnapshot.trim().toLowerCase()),
+  );
+  const standardCandidates =
+    materialItemNames.size > 0
+      ? input.candidates.filter(
+          (candidate) => !materialItemNames.has(candidate.name.trim().toLowerCase()),
+        )
+      : input.candidates;
+  const standardItemBudget = Math.max(0, requestedItemCount - materialItems.length);
+  const standardItems =
+    standardCandidates.length > 0 && standardItemBudget > 0
+      ? generateLootPoolItems({
+          campaignId: input.campaignId,
+          seedKey,
+          partyLevel: resolvedPartyLevel,
+          difficulty: resolvedDifficulty,
+          candidates: standardCandidates,
+          maxItems: standardItemBudget,
+        })
+      : [];
+
+  return {
+    encounterId: input.encounter?.id ?? null,
+    title: resolvedTitle,
+    sourceText: resolvedSourceText,
+    notes,
+    partyLevel: resolvedPartyLevel,
+    difficulty: resolvedDifficulty,
+    distributionMode: input.encounter ? "ROLL" : "ASSIGN",
+    items: [...materialItems, ...standardItems],
   };
 }

@@ -42,11 +42,11 @@ import {
   setDmSession,
 } from "@/lib/dm-session";
 import {
-  computeLootGenerationProfile,
-  generateEncounterMaterialDrops,
-  generateLootPoolItems,
+  buildLootPoolDraft,
   runPartyLootRoll,
 } from "@/lib/loot-generation";
+import { formatHoldingScopeLabel } from "@/lib/format";
+import { setLootClaimReservation } from "@/lib/loot-progress";
 import { hashPin } from "@/lib/pin";
 import { prisma } from "@/lib/prisma";
 
@@ -69,6 +69,13 @@ type CampaignMutationContext = {
   status: CampaignStatus;
   name: string;
 };
+
+function buildLootDeliveryMetadata(input: {
+  scope: HoldingScope;
+  baseDetail: string;
+}) {
+  return `${input.baseDetail} Sent to ${formatHoldingScopeLabel(input.scope)}.`;
+}
 
 function redirectToCampaign(slug: string): never {
   revalidatePath("/dm");
@@ -1023,95 +1030,44 @@ export async function generateLootPoolAction(formData: FormData) {
     }),
   ]);
 
-  const fallbackPartyLevel =
-    campaignCharacters.length > 0
-      ? Math.max(
-          1,
-          Math.round(
-            campaignCharacters.reduce((sum, character) => sum + character.level, 0) /
-              campaignCharacters.length,
-          ),
-        )
-      : 1;
+  const draft = buildLootPoolDraft({
+    campaignId: campaign.id,
+    campaignName: campaign.name,
+    candidates,
+    characterLevels: campaignCharacters.map((character) => character.level),
+    encounter,
+    overrides: {
+      title: payload.title,
+      sourceText: payload.sourceText,
+      partyLevel: payload.partyLevel,
+      difficulty: payload.difficulty,
+      itemCount: payload.itemCount,
+      includeMonsterMaterials: payload.includeMonsterMaterials,
+      notes: payload.notes,
+    },
+  });
 
-  const resolvedPartyLevel = payload.partyLevel ?? encounter?.partyLevel ?? fallbackPartyLevel;
-  const resolvedDifficulty =
-    payload.difficulty ?? encounter?.difficulty ?? EncounterDifficulty.MEDIUM;
-  const resolvedTitle =
-    payload.title?.trim() || encounter?.title || `${campaign.name} reward pool`;
-  const resolvedSourceText =
-    payload.sourceText?.trim() ||
-    (encounter ? `Encounter reward for ${encounter.title}.` : "Generated reward pool.");
-  const seedKey =
-    encounter?.id ??
-    `${resolvedTitle}|${resolvedSourceText}|${payload.notes?.trim() || ""}|${resolvedPartyLevel}|${resolvedDifficulty}`;
-  const requestedItemCount =
-    payload.itemCount ??
-    computeLootGenerationProfile(resolvedPartyLevel, resolvedDifficulty).itemCount;
-  const materialItemBudget =
-    encounter && payload.includeMonsterMaterials
-      ? Math.min(
-          requestedItemCount,
-          resolvedDifficulty === EncounterDifficulty.BOSS ? 2 : 1,
-        )
-      : 0;
-  const materialItems =
-    encounter && materialItemBudget > 0
-      ? generateEncounterMaterialDrops({
-          seedKey,
-          difficulty: resolvedDifficulty,
-          candidates,
-          monsters: encounter.monsters.map((slot) => ({
-            name: slot.monster.name,
-            monsterType: slot.monster.monsterType,
-            tags: slot.monster.tags,
-            specialDrops: slot.monster.specialDrops,
-            quantity: slot.quantity,
-          })),
-          maxItems: materialItemBudget,
-        })
-      : [];
-  const materialItemNames = new Set(
-    materialItems.map((item) => item.itemNameSnapshot.trim().toLowerCase()),
-  );
-  const standardCandidates =
-    materialItemNames.size > 0
-      ? candidates.filter(
-          (candidate) => !materialItemNames.has(candidate.name.trim().toLowerCase()),
-        )
-      : candidates;
-  const standardItemBudget = Math.max(0, requestedItemCount - materialItems.length);
-  const standardItems =
-    standardCandidates.length > 0 && standardItemBudget > 0
-      ? generateLootPoolItems({
-          campaignId: campaign.id,
-          seedKey,
-          partyLevel: resolvedPartyLevel,
-          difficulty: resolvedDifficulty,
-          candidates: standardCandidates,
-          maxItems: standardItemBudget,
-        })
-      : [];
-  const items = [...materialItems, ...standardItems];
-
-  if (items.length === 0) {
+  if (draft.items.length === 0) {
     redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
   }
 
   await prisma.lootPool.create({
     data: {
       campaignId: campaign.id,
-      encounterId: encounter?.id ?? null,
-      title: resolvedTitle,
-      sourceText: resolvedSourceText,
-      notes: payload.notes?.trim() || null,
-      partyLevel: resolvedPartyLevel,
-      difficulty: resolvedDifficulty,
+      encounterId: draft.encounterId,
+      title: draft.title,
+      sourceText: draft.sourceText,
+      notes: draft.notes,
+      partyLevel: draft.partyLevel,
+      difficulty: draft.difficulty,
       status: LootPoolStatus.OPEN,
       items: {
-        create: items.map((item) => ({
+        create: draft.items.map((item) => ({
           ...item,
-          distributionMode: encounter ? LootDistributionMode.ROLL : LootDistributionMode.ASSIGN,
+          distributionMode:
+            draft.distributionMode === "ROLL"
+              ? LootDistributionMode.ROLL
+              : LootDistributionMode.ASSIGN,
         })),
       },
     },
@@ -1198,7 +1154,10 @@ export async function assignLootPoolItemAction(formData: FormData) {
         awardedCharacterId: character.id,
         resolutionScope: payload.scope,
         resolutionNote: note,
-        resolutionMetadata: `Assigned directly to ${character.name}.`,
+        resolutionMetadata: buildLootDeliveryMetadata({
+          scope: payload.scope,
+          baseDetail: `Assigned directly to ${character.name}.`,
+        }),
         resolvedAt,
       },
     });
@@ -1316,7 +1275,10 @@ export async function rollLootPoolItemAction(formData: FormData) {
         awardedCharacterId: rollResult.winner.id,
         resolutionScope: payload.scope,
         resolutionNote: note,
-        resolutionMetadata: rollResult.summary,
+        resolutionMetadata: buildLootDeliveryMetadata({
+          scope: payload.scope,
+          baseDetail: rollResult.summary,
+        }),
         resolvedAt,
       },
     });
@@ -1460,6 +1422,83 @@ export async function bankLootPoolItemAction(formData: FormData) {
   nextFormData.set("status", LootPoolItemStatus.BANKED);
 
   return deferLootPoolItemAction(nextFormData);
+}
+
+export async function reserveLootPoolItemAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    lootPoolItemMutationSchema.extend({
+      characterId: z.string().optional(),
+    }),
+    {
+      campaignSlug: formData.get("campaignSlug"),
+      campaignId: formData.get("campaignId") || undefined,
+      lootPoolItemId: formData.get("lootPoolItemId"),
+      characterId: readOptionalTextField(formData, "characterId") || undefined,
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-loot-pool-state",
+    },
+  );
+
+  const { campaign, lootPoolItem } = await resolveLootPoolItemMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+    lootPoolItemId: payload.lootPoolItemId,
+  });
+
+  if (
+    lootPoolItem.status !== LootPoolItemStatus.BANKED ||
+    lootPoolItem.distributionMode !== LootDistributionMode.BANK
+  ) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const character = payload.characterId
+    ? await prisma.character.findFirst({
+        where: {
+          id: payload.characterId,
+          campaignId: campaign.id,
+        },
+        select: {
+          id: true,
+          name: true,
+        },
+      })
+    : null;
+
+  if (payload.characterId && !character) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  const updated = await prisma.lootPoolItem.updateMany({
+    where: {
+      id: lootPoolItem.id,
+      lootPoolId: lootPoolItem.lootPool.id,
+      status: LootPoolItemStatus.BANKED,
+      distributionMode: LootDistributionMode.BANK,
+      awardedCharacterId: null,
+    },
+    data: {
+      resolutionMetadata: setLootClaimReservation({
+        metadata: lootPoolItem.resolutionMetadata,
+        reservedForName: character?.name ?? null,
+      }),
+      resolutionNote: character
+        ? `Reserved for ${character.name} pending final delivery.`
+        : "Reservation cleared.",
+    },
+  });
+
+  if (updated.count === 0) {
+    redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
+  }
+
+  revalidatePath("/bank/account");
+  redirectToCampaign(campaign.slug);
 }
 
 export async function finalizeLootPoolAction(formData: FormData) {
