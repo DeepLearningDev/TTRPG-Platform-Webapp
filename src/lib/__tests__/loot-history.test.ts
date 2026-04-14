@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildLootHistorySections,
   filterLootAwardsByDestination,
+  filterLootAwardsByRecipient,
+  filterLootReservationsByRecipient,
   getLootHistoryDestinationCounts,
+  parseLootHistoryRecipientFilter,
   parseLootHistoryDestinationFilter,
 } from "@/lib/loot-history";
 
@@ -87,5 +90,20 @@ describe("loot history sections", () => {
       bank: 1,
       inventory: 1,
     });
+  });
+
+  it("filters history by recipient name", () => {
+    expect(parseLootHistoryRecipientFilter("miri vale", ["Miri Vale", "Toren Ash"])).toBe(
+      "Miri Vale",
+    );
+    expect(parseLootHistoryRecipientFilter("unknown", ["Miri Vale", "Toren Ash"])).toBe("all");
+    expect(filterLootAwardsByRecipient(awards, "Miri Vale").map((entry) => entry.id)).toEqual([
+      "award-1",
+      "award-2",
+    ]);
+    expect(filterLootAwardsByRecipient(awards, "Toren Ash")).toEqual([]);
+    expect(
+      filterLootReservationsByRecipient(reservations, "Miri Vale").map((entry) => entry.id),
+    ).toEqual(["reserve-1"]);
   });
 });

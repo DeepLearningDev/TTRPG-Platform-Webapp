@@ -41,8 +41,11 @@ import {
 import {
   buildLootHistorySections,
   filterLootAwardsByDestination,
+  filterLootAwardsByRecipient,
+  filterLootReservationsByRecipient,
   getLootHistoryDestinationCounts,
   parseLootHistoryDestinationFilter,
+  parseLootHistoryRecipientFilter,
 } from "@/lib/loot-history";
 import {
   formatLootReservationDetail,
@@ -98,6 +101,7 @@ type DmPageProps = {
     includeMonsterMaterials?: string;
     notes?: string;
     historyScope?: string;
+    historyRecipient?: string;
   }>;
 };
 
@@ -122,11 +126,12 @@ function readSearchBoolean(value?: string) {
 function buildDmHistoryHref(input: {
   params: Awaited<DmPageProps["searchParams"]>;
   historyScope: string;
+  historyRecipient?: string;
 }) {
   const next = new URLSearchParams();
 
   for (const [key, value] of Object.entries(input.params)) {
-    if (!value || key === "historyScope") {
+    if (!value || key === "historyScope" || key === "historyRecipient") {
       continue;
     }
 
@@ -135,6 +140,10 @@ function buildDmHistoryHref(input: {
 
   if (input.historyScope !== "all") {
     next.set("historyScope", input.historyScope);
+  }
+
+  if (input.historyRecipient && input.historyRecipient !== "all") {
+    next.set("historyRecipient", input.historyRecipient);
   }
 
   const query = next.toString();
@@ -257,8 +266,15 @@ export default async function DmPage({ searchParams }: DmPageProps) {
   );
   const recentLootAwards = getRecentLootAwardEntries(campaign.ledgerEntries);
   const historyScope = parseLootHistoryDestinationFilter(params.historyScope);
+  const historyRecipient = parseLootHistoryRecipientFilter(
+    params.historyRecipient,
+    partySummaries.map((character) => character.name),
+  );
   const historyCounts = getLootHistoryDestinationCounts(recentLootAwards);
-  const filteredRecentLootAwards = filterLootAwardsByDestination(recentLootAwards, historyScope);
+  const filteredRecentLootAwards = filterLootAwardsByRecipient(
+    filterLootAwardsByDestination(recentLootAwards, historyScope),
+    historyRecipient,
+  );
   const activeLootReservations = getActiveLootReservations(
     lootPools.flatMap((pool) =>
       pool.items.map((item) => ({
@@ -271,9 +287,13 @@ export default async function DmPage({ searchParams }: DmPageProps) {
       })),
     ),
   );
+  const filteredActiveLootReservations = filterLootReservationsByRecipient(
+    activeLootReservations,
+    historyRecipient,
+  );
   const lootHistorySections = buildLootHistorySections({
     awards: filteredRecentLootAwards,
-    reservations: activeLootReservations,
+    reservations: filteredActiveLootReservations,
   });
   const openQuests = quests.filter((quest) => quest.status !== QuestStatus.COMPLETE);
   const activeStorefronts = storefronts.filter(
@@ -1292,18 +1312,61 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           </form>
 
           <div className="tag-row">
-            <Link className="tag" href={buildDmHistoryHref({ params, historyScope: "all" })}>
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope: "all",
+                historyRecipient,
+              })}
+            >
               All {historyCounts.all}
             </Link>
-            <Link className="tag" href={buildDmHistoryHref({ params, historyScope: "bank" })}>
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope: "bank",
+                historyRecipient,
+              })}
+            >
               Bank {historyCounts.bank}
             </Link>
-            <Link className="tag" href={buildDmHistoryHref({ params, historyScope: "inventory" })}>
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope: "inventory",
+                historyRecipient,
+              })}
+            >
               Inventory {historyCounts.inventory}
             </Link>
           </div>
+          <div className="tag-row">
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({ params, historyScope, historyRecipient: "all" })}
+            >
+              Everyone
+            </Link>
+            {partySummaries.map((character) => (
+              <Link
+                className="tag"
+                href={buildDmHistoryHref({
+                  params,
+                  historyScope,
+                  historyRecipient: character.name,
+                })}
+                key={character.id}
+              >
+                {character.name}
+              </Link>
+            ))}
+          </div>
           <div className="list-card">
-            {filteredRecentLootAwards.map((entry) => (
+            {filteredRecentLootAwards.length > 0 ? (
+              filteredRecentLootAwards.map((entry) => (
               <div className="list-item" key={entry.id}>
                 {(() => {
                   const source = getLootAuditSource(entry);
@@ -1327,7 +1390,10 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                   );
                 })()}
               </div>
-            ))}
+              ))
+            ) : (
+              <div className="callout">No loot deliveries match this destination and recipient filter.</div>
+            )}
           </div>
 
           <div className="panel-header">
@@ -1380,9 +1446,9 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               <h3>Active reservations</h3>
             </div>
           </div>
-          {activeLootReservations.length > 0 ? (
+          {filteredActiveLootReservations.length > 0 ? (
             <div className="list-card">
-              {activeLootReservations.slice(0, 8).map((reservation) => (
+              {filteredActiveLootReservations.slice(0, 8).map((reservation) => (
                 <div className="list-item" key={reservation.id}>
                   <div className="card-header">
                     <strong>{formatLootReservationHeadline(reservation)}</strong>
@@ -1401,7 +1467,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               ))}
             </div>
           ) : (
-            <div className="callout">No banked loot is reserved right now.</div>
+            <div className="callout">No banked loot reservations match this recipient filter.</div>
           )}
         </article>
       </section>

@@ -68,6 +68,56 @@ export function getLootHistoryDestinationCounts<T extends LootAuditEntry>(entrie
   };
 }
 
+function normalizeHistoryName(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export function parseLootHistoryRecipientFilter(
+  value: string | null | undefined,
+  candidates: string[],
+) {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return "all";
+  }
+
+  const matched =
+    candidates.find(
+      (candidate) => normalizeHistoryName(candidate) === normalizeHistoryName(normalized),
+    ) ?? null;
+
+  return matched ?? "all";
+}
+
+export function filterLootAwardsByRecipient<T extends LootAuditEntry>(
+  entries: T[],
+  recipient: string,
+) {
+  if (recipient === "all") {
+    return entries;
+  }
+
+  return entries.filter(
+    (entry) =>
+      entry.character?.name &&
+      normalizeHistoryName(entry.character.name) === normalizeHistoryName(recipient),
+  );
+}
+
+export function filterLootReservationsByRecipient<T extends ActiveLootReservation>(
+  entries: T[],
+  recipient: string,
+) {
+  if (recipient === "all") {
+    return entries;
+  }
+
+  return entries.filter(
+    (entry) => normalizeHistoryName(entry.reservedForName) === normalizeHistoryName(recipient),
+  );
+}
+
 export function buildLootHistorySections(input: {
   awards: LootAuditEntry[];
   reservations: ActiveLootReservation[];
