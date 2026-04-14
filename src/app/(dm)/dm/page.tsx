@@ -53,6 +53,11 @@ import {
   getActiveLootReservations,
 } from "@/lib/loot-reservation-audit";
 import {
+  formatLootReservationHistoryDetail,
+  getRecentLootReservationEvents,
+  mapLootReservationHistoryItem,
+} from "@/lib/loot-reservation-history";
+import {
   assignLootPoolItemAction,
   archiveNpcAction,
   archiveCampaignAction,
@@ -290,6 +295,23 @@ export default async function DmPage({ searchParams }: DmPageProps) {
   const filteredActiveLootReservations = filterLootReservationsByRecipient(
     activeLootReservations,
     historyRecipient,
+  );
+  const recentReservationHistory = getRecentLootReservationEvents(
+    lootPools.flatMap((pool) =>
+      pool.items.flatMap((item) =>
+        item.reservationEvents.map((event) => ({
+          ...event,
+          lootPoolItem: {
+            id: item.id,
+            itemNameSnapshot: item.itemNameSnapshot,
+            quantity: item.quantity,
+            lootPool: {
+              title: pool.title,
+            },
+          },
+        })),
+      ),
+    ),
   );
   const lootHistorySections = buildLootHistorySections({
     awards: filteredRecentLootAwards,
@@ -1468,6 +1490,45 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             </div>
           ) : (
             <div className="callout">No banked loot reservations match this recipient filter.</div>
+          )}
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <ScrollText size={14} />
+                Reservation history
+              </span>
+              <h3>Recent reservation events</h3>
+            </div>
+          </div>
+          {recentReservationHistory.length > 0 ? (
+            <div className="list-card">
+              {recentReservationHistory.slice(0, 8).map((event) => {
+                const item = mapLootReservationHistoryItem(event);
+
+                return (
+                  <div className="list-item" key={item.id}>
+                    <div className="card-header">
+                      <strong>{item.headline}</strong>
+                      <span className="tag">{formatLootAuditDate(item.createdAt)}</span>
+                    </div>
+                    <div className="tag-row">
+                      {item.tags.map((tag) => (
+                        <span className="tag" key={`${item.id}-${tag}`}>
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="muted">{formatLootReservationHistoryDetail(event)}</div>
+                    <p>{item.note}</p>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="callout">No reservation events have been recorded yet.</div>
           )}
         </article>
       </section>

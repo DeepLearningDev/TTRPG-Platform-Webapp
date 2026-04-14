@@ -10,6 +10,7 @@ import {
   CraftingJobStatus,
   LootKind,
   LootDistributionMode,
+  LootReservationEventType,
   LootPoolItemStatus,
   LootPoolRollStatus,
   LootPoolStatus,
@@ -46,7 +47,10 @@ import {
   runPartyLootRoll,
 } from "@/lib/loot-generation";
 import { formatHoldingScopeLabel } from "@/lib/format";
-import { setLootClaimReservation } from "@/lib/loot-progress";
+import {
+  parseLootReservedCharacterName,
+  setLootClaimReservation,
+} from "@/lib/loot-progress";
 import { hashPin } from "@/lib/pin";
 import { prisma } from "@/lib/prisma";
 
@@ -75,6 +79,54 @@ function buildLootDeliveryMetadata(input: {
   baseDetail: string;
 }) {
   return `${input.baseDetail} Sent to ${formatHoldingScopeLabel(input.scope)}.`;
+}
+
+async function findReservationCharacterByName(
+  client: Prisma.TransactionClient | typeof prisma,
+  input: {
+    campaignId: string;
+    name: string | null;
+  },
+) {
+  const normalized = input.name?.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  return client.character.findFirst({
+    where: {
+      campaignId: input.campaignId,
+      name: {
+        equals: normalized,
+      },
+    },
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+}
+
+async function createLootReservationEvent(
+  client: Prisma.TransactionClient | typeof prisma,
+  input: {
+    campaignId: string;
+    lootPoolItemId: string;
+    characterId?: string | null;
+    eventType: LootReservationEventType;
+    note: string;
+  },
+) {
+  await client.lootReservationEvent.create({
+    data: {
+      campaignId: input.campaignId,
+      lootPoolItemId: input.lootPoolItemId,
+      characterId: input.characterId ?? null,
+      eventType: input.eventType,
+      note: input.note,
+    },
+  });
 }
 
 function redirectToCampaign(slug: string): never {
@@ -1132,6 +1184,7 @@ export async function assignLootPoolItemAction(formData: FormData) {
     payload.note?.trim() ||
     `Loot pool assignment from ${lootPoolItem.lootPool.title} to ${character.name}.`;
   const resolvedAt = new Date();
+  const reservedForName = parseLootReservedCharacterName(lootPoolItem.resolutionMetadata);
 
   const assigned = await prisma.$transaction(async (tx) => {
     const lootItemId = await ensureLootPoolItemBackedLootItem(tx, {
@@ -1184,6 +1237,31 @@ export async function assignLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
       },
     });
+
+    if (reservedForName) {
+      const reservedCharacter = await findReservationCharacterByName(tx, {
+        campaignId: campaign.id,
+        name: reservedForName,
+      });
+
+      if (reservedCharacter && reservedCharacter.id !== character.id) {
+        await createLootReservationEvent(tx, {
+          campaignId: campaign.id,
+          lootPoolItemId: lootPoolItem.id,
+          characterId: reservedCharacter.id,
+          eventType: LootReservationEventType.RELEASED,
+          note: `Reservation for ${reservedCharacter.name} was overridden before final delivery.`,
+        });
+      }
+
+      await createLootReservationEvent(tx, {
+        campaignId: campaign.id,
+        lootPoolItemId: lootPoolItem.id,
+        characterId: character.id,
+        eventType: LootReservationEventType.AWARDED,
+        note: `Reservation resolved to ${character.name} via direct assignment to ${formatHoldingScopeLabel(payload.scope)}.`,
+      });
+    }
 
     return true;
   });
@@ -1253,6 +1331,7 @@ export async function rollLootPoolItemAction(formData: FormData) {
   const note =
     payload.note?.trim() || `${lootPoolItem.lootPool.title}: ${rollResult.summary}`;
   const resolvedAt = new Date();
+  const reservedForName = parseLootReservedCharacterName(lootPoolItem.resolutionMetadata);
 
   const rolled = await prisma.$transaction(async (tx) => {
     const lootItemId = await ensureLootPoolItemBackedLootItem(tx, {
@@ -1318,6 +1397,31 @@ export async function rollLootPoolItemAction(formData: FormData) {
       },
     });
 
+    if (reservedForName) {
+      const reservedCharacter = await findReservationCharacterByName(tx, {
+        campaignId: campaign.id,
+        name: reservedForName,
+      });
+
+      if (reservedCharacter && reservedCharacter.id !== rollResult.winner.id) {
+        await createLootReservationEvent(tx, {
+          campaignId: campaign.id,
+          lootPoolItemId: lootPoolItem.id,
+          characterId: reservedCharacter.id,
+          eventType: LootReservationEventType.RELEASED,
+          note: `Reservation for ${reservedCharacter.name} was released by a party roll.`,
+        });
+      }
+
+      await createLootReservationEvent(tx, {
+        campaignId: campaign.id,
+        lootPoolItemId: lootPoolItem.id,
+        characterId: rollResult.winner.id,
+        eventType: LootReservationEventType.AWARDED,
+        note: `Reservation resolved to ${rollResult.winner.name} via party roll to ${formatHoldingScopeLabel(payload.scope)}.`,
+      });
+    }
+
     return true;
   });
 
@@ -1364,6 +1468,8 @@ export async function deferLootPoolItemAction(formData: FormData) {
     redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
   }
 
+  const reservedForName = parseLootReservedCharacterName(lootPoolItem.resolutionMetadata);
+
   const deferred = await prisma.$transaction(async (tx) => {
     const updated = await tx.lootPoolItem.updateMany({
       where: {
@@ -1400,6 +1506,24 @@ export async function deferLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
       },
     });
+
+    if (reservedForName) {
+      const reservedCharacter = await findReservationCharacterByName(tx, {
+        campaignId: campaign.id,
+        name: reservedForName,
+      });
+
+      await createLootReservationEvent(tx, {
+        campaignId: campaign.id,
+        lootPoolItemId: lootPoolItem.id,
+        characterId: reservedCharacter?.id ?? null,
+        eventType: LootReservationEventType.CLEARED,
+        note:
+          payload.status === LootPoolItemStatus.BANKED
+            ? `Reservation for ${reservedForName} was cleared and the item returned to the banked pool.`
+            : `Reservation for ${reservedForName} was cleared and the item returned to unresolved loot.`,
+      });
+    }
 
     return true;
   });
@@ -1474,26 +1598,61 @@ export async function reserveLootPoolItemAction(formData: FormData) {
     redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
   }
 
-  const updated = await prisma.lootPoolItem.updateMany({
-    where: {
-      id: lootPoolItem.id,
-      lootPoolId: lootPoolItem.lootPool.id,
-      status: LootPoolItemStatus.BANKED,
-      distributionMode: LootDistributionMode.BANK,
-      awardedCharacterId: null,
-    },
-    data: {
-      resolutionMetadata: setLootClaimReservation({
-        metadata: lootPoolItem.resolutionMetadata,
-        reservedForName: character?.name ?? null,
-      }),
-      resolutionNote: character
-        ? `Reserved for ${character.name} pending final delivery.`
-        : "Reservation cleared.",
-    },
+  const previousReservedForName = parseLootReservedCharacterName(lootPoolItem.resolutionMetadata);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const updatedRecord = await tx.lootPoolItem.updateMany({
+      where: {
+        id: lootPoolItem.id,
+        lootPoolId: lootPoolItem.lootPool.id,
+        status: LootPoolItemStatus.BANKED,
+        distributionMode: LootDistributionMode.BANK,
+        awardedCharacterId: null,
+      },
+      data: {
+        resolutionMetadata: setLootClaimReservation({
+          metadata: lootPoolItem.resolutionMetadata,
+          reservedForName: character?.name ?? null,
+        }),
+        resolutionNote: character
+          ? `Reserved for ${character.name} pending final delivery.`
+          : "Reservation cleared.",
+      },
+    });
+
+    if (updatedRecord.count === 0) {
+      return 0;
+    }
+
+    const previousReservedCharacter = await findReservationCharacterByName(tx, {
+      campaignId: campaign.id,
+      name: previousReservedForName,
+    });
+
+    if (previousReservedForName && (!character || previousReservedForName !== character.name)) {
+      await createLootReservationEvent(tx, {
+        campaignId: campaign.id,
+        lootPoolItemId: lootPoolItem.id,
+        characterId: previousReservedCharacter?.id ?? null,
+        eventType: LootReservationEventType.CLEARED,
+        note: `Reservation for ${previousReservedForName} was cleared.`,
+      });
+    }
+
+    if (character && previousReservedForName !== character.name) {
+      await createLootReservationEvent(tx, {
+        campaignId: campaign.id,
+        lootPoolItemId: lootPoolItem.id,
+        characterId: character.id,
+        eventType: LootReservationEventType.RESERVED,
+        note: `Item reserved for ${character.name}.`,
+      });
+    }
+
+    return updatedRecord.count;
   });
 
-  if (updated.count === 0) {
+  if (updated === 0) {
     redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
   }
 

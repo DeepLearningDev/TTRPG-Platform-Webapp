@@ -22,6 +22,11 @@ import {
   getActiveLootReservations,
 } from "@/lib/loot-reservation-audit";
 import {
+  filterLootReservationHistoryByCharacter,
+  getRecentLootReservationEvents,
+  mapLootReservationHistoryItem,
+} from "@/lib/loot-reservation-history";
+import {
   getPlayerLootItemProgress,
   summarizePlayerLootPool,
 } from "@/lib/loot-progress";
@@ -161,6 +166,26 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
   );
   const myActiveReservations = activeLootReservations.filter(
     (reservation) => reservation.reservedForName.toLowerCase() === account.name.toLowerCase(),
+  );
+  const myReservationHistory = filterLootReservationHistoryByCharacter(
+    getRecentLootReservationEvents(
+      account.lootPools.flatMap((pool) =>
+        pool.items.flatMap((item) =>
+          item.reservationEvents.map((event) => ({
+            ...event,
+            lootPoolItem: {
+              id: item.id,
+              itemNameSnapshot: item.itemNameSnapshot,
+              quantity: item.quantity,
+              lootPool: {
+                title: pool.title,
+              },
+            },
+          })),
+        ),
+      ),
+    ).map(mapLootReservationHistoryItem),
+    account.id,
   );
   const lootHistorySections = buildLootHistorySections({
     awards: filteredRecentLootAwards,
@@ -516,6 +541,41 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
             </div>
           ) : (
             <div className="callout">No banked loot is currently reserved for you.</div>
+          )}
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="section-kicker">
+                <ScrollText size={14} />
+                Reservation history
+              </span>
+              <h2>Your reservation events</h2>
+            </div>
+          </div>
+          {myReservationHistory.length > 0 ? (
+            <div className="list-card">
+              {myReservationHistory.slice(0, 8).map((item) => (
+                <div className="list-item" key={item.id}>
+                  <div className="card-header">
+                    <strong>{item.headline}</strong>
+                    <span className="tag">{formatLootAuditDate(item.createdAt)}</span>
+                  </div>
+                  <div className="tag-row">
+                    {item.tags.map((tag) => (
+                      <span className="tag" key={`${item.id}-${tag}`}>
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="muted">{item.detail}</div>
+                  <p>{item.note}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="callout">No reservation events have been recorded for you yet.</div>
           )}
         </article>
 
