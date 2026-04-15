@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  filterLootReservationHistoryByOperator,
   filterLootReservationHistoryBySource,
   filterLootReservationHistoryByCharacter,
   formatLootReservationHistoryDetail,
   formatLootReservationHistoryHeadline,
+  getLootReservationHistoryOperatorCounts,
   getLootReservationHistorySource,
   getLootReservationHistorySourceCounts,
   getRecentLootReservationEvents,
   mapLootReservationHistoryItem,
+  parseLootReservationHistoryOperatorFilter,
   parseLootReservationHistorySourceFilter,
 } from "@/lib/loot-reservation-history";
 
@@ -52,7 +55,7 @@ describe("loot reservation history helpers", () => {
     {
       id: "event-3",
       eventType: "AWARDED",
-      actorName: "dm",
+      actorName: "liam",
       note: "Reservation resolved to Talan Reed via direct assignment.",
       createdAt: new Date("2026-04-14T00:00:00.000Z"),
       character: { id: "char-2", name: "Talan Reed" },
@@ -114,6 +117,26 @@ describe("loot reservation history helpers", () => {
       parseLootReservationHistorySourceFilter("harbor wraith", counts.sources.map((entry) => entry.source)),
     ).toBe("Harbor Wraith");
     expect(filterLootReservationHistoryBySource(entries, "Shrine cache").map((entry) => entry.id)).toEqual([
+      "event-1",
+      "event-2",
+    ]);
+  });
+
+  it("derives reservation history operators and filters by them", () => {
+    const counts = getLootReservationHistoryOperatorCounts(entries);
+
+    expect(counts.all).toBe(3);
+    expect(counts.operators).toEqual([
+      { operator: "dm", count: 2 },
+      { operator: "liam", count: 1 },
+    ]);
+    expect(
+      parseLootReservationHistoryOperatorFilter(
+        "LIAM",
+        counts.operators.map((entry) => entry.operator),
+      ),
+    ).toBe("liam");
+    expect(filterLootReservationHistoryByOperator(entries, "dm").map((entry) => entry.id)).toEqual([
       "event-1",
       "event-2",
     ]);

@@ -32,6 +32,10 @@ function normalizeReservationHistorySource(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+function normalizeReservationHistoryOperator(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 export function getLootReservationHistorySource(entry: LootReservationEventRecord) {
   const sourceText = entry.lootPoolItem.lootPool.sourceText?.trim();
 
@@ -147,5 +151,62 @@ export function filterLootReservationHistoryBySource<T extends LootReservationEv
     (entry) =>
       normalizeReservationHistorySource(getLootReservationHistorySource(entry)) ===
       normalizeReservationHistorySource(source),
+  );
+}
+
+export function getLootReservationHistoryOperatorCounts<T extends LootReservationEventRecord>(
+  entries: T[],
+) {
+  const counts = new Map<string, number>();
+
+  for (const entry of entries) {
+    const operator = entry.actorName?.trim();
+
+    if (!operator) {
+      continue;
+    }
+
+    counts.set(operator, (counts.get(operator) ?? 0) + 1);
+  }
+
+  return {
+    all: entries.length,
+    operators: [...counts.entries()].map(([operator, count]) => ({ operator, count })),
+  };
+}
+
+export function parseLootReservationHistoryOperatorFilter(
+  value: string | null | undefined,
+  candidates: string[],
+) {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return "all";
+  }
+
+  const matched =
+    candidates.find(
+      (candidate) =>
+        normalizeReservationHistoryOperator(candidate) ===
+        normalizeReservationHistoryOperator(normalized),
+    ) ?? null;
+
+  return matched ?? "all";
+}
+
+export function filterLootReservationHistoryByOperator<T extends LootReservationEventRecord>(
+  entries: T[],
+  operator: string,
+) {
+  if (operator === "all") {
+    return entries;
+  }
+
+  return entries.filter(
+    (entry) =>
+      entry.actorName &&
+      normalizeReservationHistoryOperator(entry.actorName) ===
+        normalizeReservationHistoryOperator(operator),
   );
 }

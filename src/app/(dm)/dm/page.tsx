@@ -57,11 +57,14 @@ import {
   getActiveLootReservations,
 } from "@/lib/loot-reservation-audit";
 import {
+  filterLootReservationHistoryByOperator,
   filterLootReservationHistoryBySource,
   formatLootReservationHistoryDetail,
+  getLootReservationHistoryOperatorCounts,
   getLootReservationHistorySourceCounts,
   getRecentLootReservationEvents,
   mapLootReservationHistoryItem,
+  parseLootReservationHistoryOperatorFilter,
   parseLootReservationHistorySourceFilter,
 } from "@/lib/loot-reservation-history";
 import {
@@ -116,6 +119,7 @@ type DmPageProps = {
     historyRecipient?: string;
     historySource?: string;
     reservationSource?: string;
+    reservationOperator?: string;
   }>;
 };
 
@@ -143,6 +147,7 @@ function buildDmHistoryHref(input: {
   historyRecipient?: string;
   historySource?: string;
   reservationSource?: string;
+  reservationOperator?: string;
 }) {
   const next = new URLSearchParams();
 
@@ -152,7 +157,8 @@ function buildDmHistoryHref(input: {
       key === "historyScope" ||
       key === "historyRecipient" ||
       key === "historySource" ||
-      key === "reservationSource"
+      key === "reservationSource" ||
+      key === "reservationOperator"
     ) {
       continue;
     }
@@ -174,6 +180,10 @@ function buildDmHistoryHref(input: {
 
   if (input.reservationSource && input.reservationSource !== "all") {
     next.set("reservationSource", input.reservationSource);
+  }
+
+  if (input.reservationOperator && input.reservationOperator !== "all") {
+    next.set("reservationOperator", input.reservationOperator);
   }
 
   const query = next.toString();
@@ -350,9 +360,14 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     params.reservationSource,
     reservationSourceCounts.sources.map((entry) => entry.source),
   );
-  const recentReservationHistory = filterLootReservationHistoryBySource(
-    recentReservationEvents,
-    reservationSource,
+  const reservationOperatorCounts = getLootReservationHistoryOperatorCounts(recentReservationEvents);
+  const reservationOperator = parseLootReservationHistoryOperatorFilter(
+    params.reservationOperator,
+    reservationOperatorCounts.operators.map((entry) => entry.operator),
+  );
+  const recentReservationHistory = filterLootReservationHistoryByOperator(
+    filterLootReservationHistoryBySource(recentReservationEvents, reservationSource),
+    reservationOperator,
   );
   const lootHistorySections = buildLootHistorySections({
     awards: filteredRecentLootAwards,
@@ -1620,6 +1635,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                 historyRecipient,
                 historySource,
                 reservationSource: "all",
+                reservationOperator,
               })}
             >
               All sources {reservationSourceCounts.all}
@@ -1633,10 +1649,42 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                   historyRecipient,
                   historySource,
                   reservationSource: entry.source,
+                  reservationOperator,
                 })}
                 key={entry.source}
               >
                 {entry.source} {entry.count}
+              </Link>
+            ))}
+          </div>
+          <div className="tag-row">
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope,
+                historyRecipient,
+                historySource,
+                reservationSource,
+                reservationOperator: "all",
+              })}
+            >
+              All operators {reservationOperatorCounts.all}
+            </Link>
+            {reservationOperatorCounts.operators.map((entry) => (
+              <Link
+                className="tag"
+                href={buildDmHistoryHref({
+                  params,
+                  historyScope,
+                  historyRecipient,
+                  historySource,
+                  reservationSource,
+                  reservationOperator: entry.operator,
+                })}
+                key={entry.operator}
+              >
+                {entry.operator} {entry.count}
               </Link>
             ))}
           </div>
@@ -1659,6 +1707,9 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                       ))}
                       <span className="tag">{formatRelativeTime(item.createdAt)}</span>
                       {reservationSource !== "all" ? <span className="tag">Source {reservationSource}</span> : null}
+                      {reservationOperator !== "all" ? (
+                        <span className="tag">Operator {reservationOperator}</span>
+                      ) : null}
                       {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
                     </div>
                     <div className="muted">{formatLootReservationHistoryDetail(event)}</div>

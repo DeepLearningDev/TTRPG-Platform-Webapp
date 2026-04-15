@@ -25,11 +25,14 @@ import {
   getActiveLootReservations,
 } from "@/lib/loot-reservation-audit";
 import {
+  filterLootReservationHistoryByOperator,
   filterLootReservationHistoryBySource,
   filterLootReservationHistoryByCharacter,
+  getLootReservationHistoryOperatorCounts,
   getLootReservationHistorySourceCounts,
   getRecentLootReservationEvents,
   mapLootReservationHistoryItem,
+  parseLootReservationHistoryOperatorFilter,
   parseLootReservationHistorySourceFilter,
 } from "@/lib/loot-reservation-history";
 import {
@@ -56,6 +59,7 @@ type BankAccountPageProps = {
     historyScope?: string;
     historySource?: string;
     reservationSource?: string;
+    reservationOperator?: string;
   }>;
 };
 
@@ -91,11 +95,18 @@ function buildPlayerHistoryHref(input: {
   historyScope: string;
   historySource?: string;
   reservationSource?: string;
+  reservationOperator?: string;
 }) {
   const next = new URLSearchParams();
 
   for (const [key, value] of Object.entries(input.params)) {
-    if (!value || key === "historyScope" || key === "historySource" || key === "reservationSource") {
+    if (
+      !value ||
+      key === "historyScope" ||
+      key === "historySource" ||
+      key === "reservationSource" ||
+      key === "reservationOperator"
+    ) {
       continue;
     }
 
@@ -112,6 +123,10 @@ function buildPlayerHistoryHref(input: {
 
   if (input.reservationSource && input.reservationSource !== "all") {
     next.set("reservationSource", input.reservationSource);
+  }
+
+  if (input.reservationOperator && input.reservationOperator !== "all") {
+    next.set("reservationOperator", input.reservationOperator);
   }
 
   const query = next.toString();
@@ -214,10 +229,16 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
     params.reservationSource,
     reservationSourceCounts.sources.map((entry) => entry.source),
   );
+  const reservationOperatorCounts = getLootReservationHistoryOperatorCounts(recentReservationEvents);
+  const reservationOperator = parseLootReservationHistoryOperatorFilter(
+    params.reservationOperator,
+    reservationOperatorCounts.operators.map((entry) => entry.operator),
+  );
   const myReservationHistory = filterLootReservationHistoryByCharacter(
-    filterLootReservationHistoryBySource(recentReservationEvents, reservationSource).map(
-      mapLootReservationHistoryItem,
-    ),
+    filterLootReservationHistoryByOperator(
+      filterLootReservationHistoryBySource(recentReservationEvents, reservationSource),
+      reservationOperator,
+    ).map(mapLootReservationHistoryItem),
     account.id,
   );
   const lootHistorySections = buildLootHistorySections({
@@ -654,6 +675,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                 historyScope,
                 historySource,
                 reservationSource: "all",
+                reservationOperator,
               })}
             >
               All sources {reservationSourceCounts.all}
@@ -666,10 +688,40 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                   historyScope,
                   historySource,
                   reservationSource: entry.source,
+                  reservationOperator,
                 })}
                 key={entry.source}
               >
                 {entry.source} {entry.count}
+              </Link>
+            ))}
+          </div>
+          <div className="tag-row">
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({
+                params,
+                historyScope,
+                historySource,
+                reservationSource,
+                reservationOperator: "all",
+              })}
+            >
+              All operators {reservationOperatorCounts.all}
+            </Link>
+            {reservationOperatorCounts.operators.map((entry) => (
+              <Link
+                className="tag"
+                href={buildPlayerHistoryHref({
+                  params,
+                  historyScope,
+                  historySource,
+                  reservationSource,
+                  reservationOperator: entry.operator,
+                })}
+                key={entry.operator}
+              >
+                {entry.operator} {entry.count}
               </Link>
             ))}
           </div>
@@ -689,6 +741,9 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                     ))}
                     <span className="tag">{formatRelativeTime(item.createdAt)}</span>
                     {reservationSource !== "all" ? <span className="tag">Source {reservationSource}</span> : null}
+                    {reservationOperator !== "all" ? (
+                      <span className="tag">Operator {reservationOperator}</span>
+                    ) : null}
                     {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
                   </div>
                   <div className="muted">{item.detail}</div>
