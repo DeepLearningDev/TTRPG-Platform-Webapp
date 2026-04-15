@@ -2,8 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildLootHistorySections,
   filterLootAwardsByDestination,
+  filterLootAwardsByRecipient,
+  filterLootAwardsBySource,
+  filterLootReservationsByRecipient,
   getLootHistoryDestinationCounts,
+  getLootHistorySourceCounts,
+  parseLootHistoryRecipientFilter,
   parseLootHistoryDestinationFilter,
+  parseLootHistorySourceFilter,
 } from "@/lib/loot-history";
 
 describe("loot history sections", () => {
@@ -86,6 +92,39 @@ describe("loot history sections", () => {
       all: 2,
       bank: 1,
       inventory: 1,
+    });
+  });
+
+  it("filters history by recipient name", () => {
+    expect(parseLootHistoryRecipientFilter("miri vale", ["Miri Vale", "Toren Ash"])).toBe(
+      "Miri Vale",
+    );
+    expect(parseLootHistoryRecipientFilter("unknown", ["Miri Vale", "Toren Ash"])).toBe("all");
+    expect(filterLootAwardsByRecipient(awards, "Miri Vale").map((entry) => entry.id)).toEqual([
+      "award-1",
+      "award-2",
+    ]);
+    expect(filterLootAwardsByRecipient(awards, "Toren Ash")).toEqual([]);
+    expect(
+      filterLootReservationsByRecipient(reservations, "Miri Vale").map((entry) => entry.id),
+    ).toEqual(["reserve-1"]);
+  });
+
+  it("filters awards by source label", () => {
+    expect(parseLootHistorySourceFilter("Party roll")).toBe("Party roll");
+    expect(parseLootHistorySourceFilter("weird")).toBe("all");
+    expect(filterLootAwardsBySource(awards, "Claim approved").map((entry) => entry.id)).toEqual([
+      "award-1",
+    ]);
+    expect(filterLootAwardsBySource(awards, "Party roll").map((entry) => entry.id)).toEqual([
+      "award-2",
+    ]);
+    expect(getLootHistorySourceCounts(awards)).toEqual({
+      all: 2,
+      claimApproved: 1,
+      partyRoll: 1,
+      directAssignment: 0,
+      manualAward: 0,
     });
   });
 });

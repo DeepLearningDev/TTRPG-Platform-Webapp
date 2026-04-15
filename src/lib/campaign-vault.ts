@@ -58,6 +58,14 @@ const dashboardInclude = {
         include: {
           lootItem: true,
           awardedCharacter: true,
+          reservationEvents: {
+            include: {
+              character: true,
+            },
+            orderBy: {
+              createdAt: "desc" as const,
+            },
+          },
           rollEntries: {
             include: {
               character: true,
@@ -351,6 +359,14 @@ export async function getPlayerAccountBySession(input: {
                 include: {
                   lootItem: true,
                   awardedCharacter: true,
+                  reservationEvents: {
+                    include: {
+                      character: true,
+                    },
+                    orderBy: {
+                      createdAt: "desc",
+                    },
+                  },
                   rollEntries: {
                     include: {
                       character: true,
