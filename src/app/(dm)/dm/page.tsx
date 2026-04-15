@@ -377,6 +377,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
   const lootHistorySections = buildLootHistorySections({
     awards: filteredRecentLootAwards,
     reservations: filteredActiveLootReservations,
+    reservationEvents: recentReservationHistory.map(mapLootReservationHistoryItem),
   });
   const openQuests = quests.filter((quest) => quest.status !== QuestStatus.COMPLETE);
   const activeStorefronts = storefronts.filter(

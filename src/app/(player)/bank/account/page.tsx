@@ -245,6 +245,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
   const lootHistorySections = buildLootHistorySections({
     awards: filteredRecentLootAwards,
     reservations: myActiveReservations,
+    reservationEvents: myReservationHistory,
   });
 
   return (
