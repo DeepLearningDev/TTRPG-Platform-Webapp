@@ -1600,6 +1600,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                           {tag}
                         </span>
                       ))}
+                      {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
                     </div>
                     <div className="muted">{formatLootReservationHistoryDetail(event)}</div>
                     <p>{item.note}</p>

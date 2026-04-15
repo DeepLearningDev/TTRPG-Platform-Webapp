@@ -640,6 +640,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                         {tag}
                       </span>
                     ))}
+                    {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
                   </div>
                   <div className="muted">{item.detail}</div>
                   <p>{item.note}</p>

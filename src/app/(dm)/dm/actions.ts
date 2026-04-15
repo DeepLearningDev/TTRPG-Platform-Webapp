@@ -115,6 +115,7 @@ async function createLootReservationEvent(
     lootPoolItemId: string;
     characterId?: string | null;
     eventType: LootReservationEventType;
+    actorName?: string | null;
     note: string;
   },
 ) {
@@ -124,6 +125,7 @@ async function createLootReservationEvent(
       lootPoolItemId: input.lootPoolItemId,
       characterId: input.characterId ?? null,
       eventType: input.eventType,
+      actorName: input.actorName ?? null,
       note: input.note,
     },
   });
@@ -1129,7 +1131,7 @@ export async function generateLootPoolAction(formData: FormData) {
 }
 
 export async function assignLootPoolItemAction(formData: FormData) {
-  await requireDmSession();
+  const session = await requireDmSession();
 
   const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const payload = parseMutationPayload(
@@ -1250,6 +1252,7 @@ export async function assignLootPoolItemAction(formData: FormData) {
           lootPoolItemId: lootPoolItem.id,
           characterId: reservedCharacter.id,
           eventType: LootReservationEventType.RELEASED,
+          actorName: session.username,
           note: `Reservation for ${reservedCharacter.name} was overridden before final delivery.`,
         });
       }
@@ -1259,6 +1262,7 @@ export async function assignLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
         characterId: character.id,
         eventType: LootReservationEventType.AWARDED,
+        actorName: session.username,
         note: `Reservation resolved to ${character.name} via direct assignment to ${formatHoldingScopeLabel(payload.scope)}.`,
       });
     }
@@ -1275,7 +1279,7 @@ export async function assignLootPoolItemAction(formData: FormData) {
 }
 
 export async function rollLootPoolItemAction(formData: FormData) {
-  await requireDmSession();
+  const session = await requireDmSession();
 
   const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const payload = parseMutationPayload(
@@ -1409,6 +1413,7 @@ export async function rollLootPoolItemAction(formData: FormData) {
           lootPoolItemId: lootPoolItem.id,
           characterId: reservedCharacter.id,
           eventType: LootReservationEventType.RELEASED,
+          actorName: session.username,
           note: `Reservation for ${reservedCharacter.name} was released by a party roll.`,
         });
       }
@@ -1418,6 +1423,7 @@ export async function rollLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
         characterId: rollResult.winner.id,
         eventType: LootReservationEventType.AWARDED,
+        actorName: session.username,
         note: `Reservation resolved to ${rollResult.winner.name} via party roll to ${formatHoldingScopeLabel(payload.scope)}.`,
       });
     }
@@ -1434,7 +1440,7 @@ export async function rollLootPoolItemAction(formData: FormData) {
 }
 
 export async function deferLootPoolItemAction(formData: FormData) {
-  await requireDmSession();
+  const session = await requireDmSession();
 
   const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const payload = parseMutationPayload(
@@ -1518,6 +1524,7 @@ export async function deferLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
         characterId: reservedCharacter?.id ?? null,
         eventType: LootReservationEventType.CLEARED,
+        actorName: session.username,
         note:
           payload.status === LootPoolItemStatus.BANKED
             ? `Reservation for ${reservedForName} was cleared and the item returned to the banked pool.`
@@ -1549,7 +1556,7 @@ export async function bankLootPoolItemAction(formData: FormData) {
 }
 
 export async function reserveLootPoolItemAction(formData: FormData) {
-  await requireDmSession();
+  const session = await requireDmSession();
 
   const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const payload = parseMutationPayload(
@@ -1635,6 +1642,7 @@ export async function reserveLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
         characterId: previousReservedCharacter?.id ?? null,
         eventType: LootReservationEventType.CLEARED,
+        actorName: session.username,
         note: `Reservation for ${previousReservedForName} was cleared.`,
       });
     }
@@ -1645,6 +1653,7 @@ export async function reserveLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
         characterId: character.id,
         eventType: LootReservationEventType.RESERVED,
+        actorName: session.username,
         note: `Item reserved for ${character.name}.`,
       });
     }

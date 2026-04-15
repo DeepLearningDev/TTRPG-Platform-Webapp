@@ -1,6 +1,7 @@
 type LootReservationEventRecord = {
   id: string;
   eventType: string;
+  actorName: string | null;
   note: string;
   createdAt: Date;
   character: { id: string; name: string } | null;
@@ -22,6 +23,7 @@ export type LootReservationHistoryItem = {
   createdAt: Date;
   tags: string[];
   characterId: string | null;
+  actorName: string | null;
 };
 
 export function getRecentLootReservationEvents<T extends LootReservationEventRecord>(entries: T[]) {
@@ -42,6 +44,10 @@ export function formatLootReservationHistoryDetail(entry: LootReservationEventRe
     parts.push(entry.character.name);
   }
 
+  if (entry.actorName) {
+    parts.push(`by ${entry.actorName}`);
+  }
+
   return parts.join(" · ");
 }
 
@@ -56,6 +62,7 @@ export function mapLootReservationHistoryItem<T extends LootReservationEventReco
     createdAt: entry.createdAt,
     tags: [entry.eventType.replace(/_/g, " ")],
     characterId: entry.character?.id ?? null,
+    actorName: entry.actorName ?? null,
   };
 }
 
