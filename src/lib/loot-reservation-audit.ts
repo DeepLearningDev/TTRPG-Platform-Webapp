@@ -28,6 +28,24 @@ export type ActiveLootReservation = {
   source: string;
 };
 
+export function getLootReservationFreshnessTag(
+  reservedAt: Date,
+  now: Date = new Date(),
+): "Stale" | "Overdue" | null {
+  const ageMs = Math.max(0, now.getTime() - reservedAt.getTime());
+  const ageDays = ageMs / (1000 * 60 * 60 * 24);
+
+  if (ageDays >= 7) {
+    return "Overdue";
+  }
+
+  if (ageDays >= 3) {
+    return "Stale";
+  }
+
+  return null;
+}
+
 export function getActiveLootReservations<T extends LootReservationItem>(items: T[]) {
   return items
     .map<ActiveLootReservation | null>((item) => {

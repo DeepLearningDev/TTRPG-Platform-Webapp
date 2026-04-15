@@ -54,6 +54,7 @@ import {
 import {
   formatLootReservationDetail,
   formatLootReservationHeadline,
+  getLootReservationFreshnessTag,
   getActiveLootReservations,
 } from "@/lib/loot-reservation-audit";
 import {
@@ -1593,22 +1594,29 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           {filteredActiveLootReservations.length > 0 ? (
             <div className="list-card">
               {filteredActiveLootReservations.slice(0, 8).map((reservation) => (
-                <div className="list-item" key={reservation.id}>
-                  <div className="card-header">
-                    <strong>{formatLootReservationHeadline(reservation)}</strong>
-                    <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
-                  </div>
-                  <div className="tag-row">
-                    <span className="tag">Reserved</span>
-                    <span className="tag">{reservation.reservedForName}</span>
-                    <span className="tag">{formatRelativeTime(reservation.reservedAt)}</span>
-                    {reservation.claimInterestNames.length > 0 ? (
-                      <span className="tag">{reservation.claimInterestNames.length} interested</span>
-                    ) : null}
-                  </div>
-                  <div className="muted">{formatLootReservationDetail(reservation)}</div>
-                  <p>{reservation.detail}</p>
-                </div>
+                (() => {
+                  const freshnessTag = getLootReservationFreshnessTag(reservation.reservedAt);
+
+                  return (
+                    <div className="list-item" key={reservation.id}>
+                      <div className="card-header">
+                        <strong>{formatLootReservationHeadline(reservation)}</strong>
+                        <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
+                      </div>
+                      <div className="tag-row">
+                        <span className="tag">Reserved</span>
+                        <span className="tag">{reservation.reservedForName}</span>
+                        {freshnessTag ? <span className="tag">{freshnessTag}</span> : null}
+                        <span className="tag">{formatRelativeTime(reservation.reservedAt)}</span>
+                        {reservation.claimInterestNames.length > 0 ? (
+                          <span className="tag">{reservation.claimInterestNames.length} interested</span>
+                        ) : null}
+                      </div>
+                      <div className="muted">{formatLootReservationDetail(reservation)}</div>
+                      <p>{reservation.detail}</p>
+                    </div>
+                  );
+                })()
               ))}
             </div>
           ) : (
@@ -1692,6 +1700,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             <div className="list-card">
               {recentReservationHistory.slice(0, 8).map((event) => {
                 const item = mapLootReservationHistoryItem(event);
+                const freshnessTag = getLootReservationFreshnessTag(item.createdAt);
 
                 return (
                   <div className="list-item" key={item.id}>
@@ -1705,6 +1714,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                           {tag}
                         </span>
                       ))}
+                      {freshnessTag ? <span className="tag">{freshnessTag}</span> : null}
                       <span className="tag">{formatRelativeTime(item.createdAt)}</span>
                       {reservationSource !== "all" ? <span className="tag">Source {reservationSource}</span> : null}
                       {reservationOperator !== "all" ? (

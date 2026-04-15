@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatLootReservationDetail,
   formatLootReservationHeadline,
+  getLootReservationFreshnessTag,
   getActiveLootReservations,
 } from "@/lib/loot-reservation-audit";
 
@@ -47,5 +48,13 @@ describe("loot reservation audit helpers", () => {
     expect(formatLootReservationHeadline(reservation)).toBe("Sunforged Band × 1");
     expect(formatLootReservationDetail(reservation)).toBe("Miri Vale · Sunken Shrine");
     expect(reservation.claimInterestNames).toEqual(["Miri Vale", "Toren Ash"]);
+  });
+
+  it("classifies stale and overdue reservations", () => {
+    const now = new Date("2026-04-15T22:10:00.000Z");
+
+    expect(getLootReservationFreshnessTag(new Date("2026-04-15T20:10:00.000Z"), now)).toBe(null);
+    expect(getLootReservationFreshnessTag(new Date("2026-04-12T21:10:00.000Z"), now)).toBe("Stale");
+    expect(getLootReservationFreshnessTag(new Date("2026-04-07T22:10:00.000Z"), now)).toBe("Overdue");
   });
 });

@@ -22,6 +22,7 @@ import {
 import {
   formatLootReservationDetail,
   formatLootReservationHeadline,
+  getLootReservationFreshnessTag,
   getActiveLootReservations,
 } from "@/lib/loot-reservation-audit";
 import {
@@ -635,21 +636,28 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
           {myActiveReservations.length > 0 ? (
             <div className="list-card">
               {myActiveReservations.slice(0, 8).map((reservation) => (
-                <div className="list-item" key={reservation.id}>
-                  <div className="card-header">
-                    <strong>{formatLootReservationHeadline(reservation)}</strong>
-                    <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
-                  </div>
-                  <div className="tag-row">
-                    <span className="tag">Reserved for you</span>
-                    <span className="tag">{formatRelativeTime(reservation.reservedAt)}</span>
-                    {reservation.claimInterestNames.length > 0 ? (
-                      <span className="tag">{reservation.claimInterestNames.length} interested</span>
-                    ) : null}
-                  </div>
-                  <div className="muted">{formatLootReservationDetail(reservation)}</div>
-                  <p>{reservation.detail}</p>
-                </div>
+                (() => {
+                  const freshnessTag = getLootReservationFreshnessTag(reservation.reservedAt);
+
+                  return (
+                    <div className="list-item" key={reservation.id}>
+                      <div className="card-header">
+                        <strong>{formatLootReservationHeadline(reservation)}</strong>
+                        <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
+                      </div>
+                      <div className="tag-row">
+                        <span className="tag">Reserved for you</span>
+                        {freshnessTag ? <span className="tag">{freshnessTag}</span> : null}
+                        <span className="tag">{formatRelativeTime(reservation.reservedAt)}</span>
+                        {reservation.claimInterestNames.length > 0 ? (
+                          <span className="tag">{reservation.claimInterestNames.length} interested</span>
+                        ) : null}
+                      </div>
+                      <div className="muted">{formatLootReservationDetail(reservation)}</div>
+                      <p>{reservation.detail}</p>
+                    </div>
+                  );
+                })()
               ))}
             </div>
           ) : (
@@ -728,27 +736,34 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
           {myReservationHistory.length > 0 ? (
             <div className="list-card">
               {myReservationHistory.slice(0, 8).map((item) => (
-                <div className="list-item" key={item.id}>
-                  <div className="card-header">
-                    <strong>{item.headline}</strong>
-                    <span className="tag">{formatLootAuditDate(item.createdAt)}</span>
-                  </div>
-                  <div className="tag-row">
-                    {item.tags.map((tag) => (
-                      <span className="tag" key={`${item.id}-${tag}`}>
-                        {tag}
-                      </span>
-                    ))}
-                    <span className="tag">{formatRelativeTime(item.createdAt)}</span>
-                    {reservationSource !== "all" ? <span className="tag">Source {reservationSource}</span> : null}
-                    {reservationOperator !== "all" ? (
-                      <span className="tag">Operator {reservationOperator}</span>
-                    ) : null}
-                    {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
-                  </div>
-                  <div className="muted">{item.detail}</div>
-                  <p>{item.note}</p>
-                </div>
+                (() => {
+                  const freshnessTag = getLootReservationFreshnessTag(item.createdAt);
+
+                  return (
+                    <div className="list-item" key={item.id}>
+                      <div className="card-header">
+                        <strong>{item.headline}</strong>
+                        <span className="tag">{formatLootAuditDate(item.createdAt)}</span>
+                      </div>
+                      <div className="tag-row">
+                        {item.tags.map((tag) => (
+                          <span className="tag" key={`${item.id}-${tag}`}>
+                            {tag}
+                          </span>
+                        ))}
+                        {freshnessTag ? <span className="tag">{freshnessTag}</span> : null}
+                        <span className="tag">{formatRelativeTime(item.createdAt)}</span>
+                        {reservationSource !== "all" ? <span className="tag">Source {reservationSource}</span> : null}
+                        {reservationOperator !== "all" ? (
+                          <span className="tag">Operator {reservationOperator}</span>
+                        ) : null}
+                        {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
+                      </div>
+                      <div className="muted">{item.detail}</div>
+                      <p>{item.note}</p>
+                    </div>
+                  );
+                })()
               ))}
             </div>
           ) : (
