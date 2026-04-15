@@ -56,9 +56,12 @@ import {
   getActiveLootReservations,
 } from "@/lib/loot-reservation-audit";
 import {
+  filterLootReservationHistoryBySource,
   formatLootReservationHistoryDetail,
+  getLootReservationHistorySourceCounts,
   getRecentLootReservationEvents,
   mapLootReservationHistoryItem,
+  parseLootReservationHistorySourceFilter,
 } from "@/lib/loot-reservation-history";
 import {
   assignLootPoolItemAction,
@@ -111,6 +114,7 @@ type DmPageProps = {
     historyScope?: string;
     historyRecipient?: string;
     historySource?: string;
+    reservationSource?: string;
   }>;
 };
 
@@ -137,11 +141,18 @@ function buildDmHistoryHref(input: {
   historyScope: string;
   historyRecipient?: string;
   historySource?: string;
+  reservationSource?: string;
 }) {
   const next = new URLSearchParams();
 
   for (const [key, value] of Object.entries(input.params)) {
-    if (!value || key === "historyScope" || key === "historyRecipient" || key === "historySource") {
+    if (
+      !value ||
+      key === "historyScope" ||
+      key === "historyRecipient" ||
+      key === "historySource" ||
+      key === "reservationSource"
+    ) {
       continue;
     }
 
@@ -158,6 +169,10 @@ function buildDmHistoryHref(input: {
 
   if (input.historySource && input.historySource !== "all") {
     next.set("historySource", input.historySource);
+  }
+
+  if (input.reservationSource && input.reservationSource !== "all") {
+    next.set("reservationSource", input.reservationSource);
   }
 
   const query = next.toString();
@@ -310,7 +325,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     activeLootReservations,
     historyRecipient,
   );
-  const recentReservationHistory = getRecentLootReservationEvents(
+  const recentReservationEvents = getRecentLootReservationEvents(
     lootPools.flatMap((pool) =>
       pool.items.flatMap((item) =>
         item.reservationEvents.map((event) => ({
@@ -321,11 +336,22 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             quantity: item.quantity,
             lootPool: {
               title: pool.title,
+              sourceText: pool.sourceText,
+              encounter: pool.encounter,
             },
           },
         })),
       ),
     ),
+  );
+  const reservationSourceCounts = getLootReservationHistorySourceCounts(recentReservationEvents);
+  const reservationSource = parseLootReservationHistorySourceFilter(
+    params.reservationSource,
+    reservationSourceCounts.sources.map((entry) => entry.source),
+  );
+  const recentReservationHistory = filterLootReservationHistoryBySource(
+    recentReservationEvents,
+    reservationSource,
   );
   const lootHistorySections = buildLootHistorySections({
     awards: filteredRecentLootAwards,
@@ -1583,6 +1609,35 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               <h3>Recent reservation events</h3>
             </div>
           </div>
+          <div className="tag-row">
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope,
+                historyRecipient,
+                historySource,
+                reservationSource: "all",
+              })}
+            >
+              All sources {reservationSourceCounts.all}
+            </Link>
+            {reservationSourceCounts.sources.map((entry) => (
+              <Link
+                className="tag"
+                href={buildDmHistoryHref({
+                  params,
+                  historyScope,
+                  historyRecipient,
+                  historySource,
+                  reservationSource: entry.source,
+                })}
+                key={entry.source}
+              >
+                {entry.source} {entry.count}
+              </Link>
+            ))}
+          </div>
           {recentReservationHistory.length > 0 ? (
             <div className="list-card">
               {recentReservationHistory.slice(0, 8).map((event) => {
@@ -1600,6 +1655,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                           {tag}
                         </span>
                       ))}
+                      {reservationSource !== "all" ? <span className="tag">Source {reservationSource}</span> : null}
                       {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
                     </div>
                     <div className="muted">{formatLootReservationHistoryDetail(event)}</div>

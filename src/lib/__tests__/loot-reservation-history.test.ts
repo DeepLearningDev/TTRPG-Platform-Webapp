@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  filterLootReservationHistoryBySource,
   filterLootReservationHistoryByCharacter,
   formatLootReservationHistoryDetail,
   formatLootReservationHistoryHeadline,
+  getLootReservationHistorySource,
+  getLootReservationHistorySourceCounts,
   getRecentLootReservationEvents,
   mapLootReservationHistoryItem,
+  parseLootReservationHistorySourceFilter,
 } from "@/lib/loot-reservation-history";
 
 describe("loot reservation history helpers", () => {
@@ -22,6 +26,8 @@ describe("loot reservation history helpers", () => {
         quantity: 1,
         lootPool: {
           title: "Sunken Shrine Spoils",
+          sourceText: "Shrine cache",
+          encounter: { title: "Shrine Depths" },
         },
       },
     },
@@ -38,6 +44,26 @@ describe("loot reservation history helpers", () => {
         quantity: 1,
         lootPool: {
           title: "Sunken Shrine Spoils",
+          sourceText: "Shrine cache",
+          encounter: { title: "Shrine Depths" },
+        },
+      },
+    },
+    {
+      id: "event-3",
+      eventType: "AWARDED",
+      actorName: "dm",
+      note: "Reservation resolved to Talan Reed via direct assignment.",
+      createdAt: new Date("2026-04-14T00:00:00.000Z"),
+      character: { id: "char-2", name: "Talan Reed" },
+      lootPoolItem: {
+        id: "item-2",
+        itemNameSnapshot: "Waveglass Charm",
+        quantity: 1,
+        lootPool: {
+          title: "Wrecked Reliquary",
+          sourceText: "",
+          encounter: { title: "Harbor Wraith" },
         },
       },
     },
@@ -47,6 +73,7 @@ describe("loot reservation history helpers", () => {
     expect(getRecentLootReservationEvents(entries).map((entry) => entry.id)).toEqual([
       "event-1",
       "event-2",
+      "event-3",
     ]);
   });
 
@@ -67,6 +94,28 @@ describe("loot reservation history helpers", () => {
     expect(
       filterLootReservationHistoryByCharacter(mapped, "char-1").map((entry) => entry.id),
     ).toEqual(["event-1", "event-2"]);
-    expect(filterLootReservationHistoryByCharacter(mapped, "char-2")).toEqual([]);
+    expect(filterLootReservationHistoryByCharacter(mapped, "char-2").map((entry) => entry.id)).toEqual([
+      "event-3",
+    ]);
+  });
+
+  it("derives reservation history sources and filters by them", () => {
+    expect(getLootReservationHistorySource(entries[0])).toBe("Shrine cache");
+    expect(getLootReservationHistorySource(entries[2])).toBe("Harbor Wraith");
+
+    const counts = getLootReservationHistorySourceCounts(entries);
+
+    expect(counts.all).toBe(3);
+    expect(counts.sources).toEqual([
+      { source: "Shrine cache", count: 2 },
+      { source: "Harbor Wraith", count: 1 },
+    ]);
+    expect(
+      parseLootReservationHistorySourceFilter("harbor wraith", counts.sources.map((entry) => entry.source)),
+    ).toBe("Harbor Wraith");
+    expect(filterLootReservationHistoryBySource(entries, "Shrine cache").map((entry) => entry.id)).toEqual([
+      "event-1",
+      "event-2",
+    ]);
   });
 });
