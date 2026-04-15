@@ -136,6 +136,11 @@ function redirectToCampaign(slug: string): never {
   redirect(`/dm?campaign=${slug}`);
 }
 
+function redirectToCampaignWithMessage(slug: string, key: string, value: string): never {
+  revalidatePath("/dm");
+  redirect(`/dm?campaign=${slug}&${key}=${value}`);
+}
+
 function redirectToCampaignError(
   slug: string | null | undefined,
   error: string,
@@ -2340,6 +2345,84 @@ export async function createMailThreadAction(formData: FormData) {
   });
 
   redirectToCampaign(campaign.slug);
+}
+
+export async function nudgeStaleReservationAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    z.object({
+      campaignSlug: z.string().min(1),
+      campaignId: z.string().optional(),
+      lootPoolItemId: z.string().min(1),
+    }),
+    {
+      campaignSlug: formData.get("campaignSlug"),
+      campaignId: formData.get("campaignId") || undefined,
+      lootPoolItemId: formData.get("lootPoolItemId"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-mail-state",
+    },
+  );
+
+  const { campaign, lootPoolItem } = await resolveLootPoolItemMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+    lootPoolItemId: payload.lootPoolItemId,
+  });
+
+  const reservedForName = parseLootReservedCharacterName(lootPoolItem.resolutionMetadata);
+
+  if (!reservedForName) {
+    redirectToCampaignError(campaign.slug, "invalid-mail-state");
+  }
+
+  const character = await prisma.character.findFirst({
+    where: {
+      campaignId: campaign.id,
+      name: reservedForName,
+    },
+    select: {
+      id: true,
+      name: true,
+      playerName: true,
+    },
+  });
+
+  if (!character) {
+    redirectToCampaignError(campaign.slug, "invalid-mail-state");
+  }
+
+  const reservedDays = Math.floor(
+    Math.max(0, Date.now() - lootPoolItem.updatedAt.getTime()) / (1000 * 60 * 60 * 24),
+  );
+  const sourceText = lootPoolItem.lootPool.title;
+
+  await prisma.mailThread.create({
+    data: {
+      campaignId: campaign.id,
+      subject: `Loot follow-up: ${lootPoolItem.itemNameSnapshot}`,
+      senderName: "DM",
+      recipientName: character.name,
+      notes: "Auto-created from the stale reservation nudge action.",
+      messages: {
+        create: {
+          fromName: "DM",
+          toName: character.name,
+          body:
+            `${lootPoolItem.itemNameSnapshot} from ${sourceText} is still reserved for you.` +
+            ` It has been waiting ${reservedDays} day${reservedDays === 1 ? "" : "s"}.` +
+            " Reply if you still want it banked or are ready for final delivery.",
+          isFromDm: true,
+        },
+      },
+    },
+  });
+
+  redirectToCampaignWithMessage(campaign.slug, "mail", "nudged");
 }
 
 export async function replyMailThreadAction(formData: FormData) {

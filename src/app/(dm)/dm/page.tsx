@@ -91,6 +91,7 @@ import {
   generateLootPoolAction,
   recordStorefrontSaleAction,
   logoutDmAction,
+  nudgeStaleReservationAction,
   replyMailThreadAction,
   reserveLootPoolItemAction,
   rollLootPoolItemAction,
@@ -122,6 +123,7 @@ type DmPageProps = {
     historySource?: string;
     reservationSource?: string;
     reservationOperator?: string;
+    mail?: string;
   }>;
 };
 
@@ -232,6 +234,10 @@ const dmErrorMessages: Record<string, string> = {
     "A campaign with that name already exists.",
 };
 
+const dmMailMessages: Record<string, string> = {
+  nudged: "A stale reservation nudge thread was created.",
+};
+
 export default async function DmPage({ searchParams }: DmPageProps) {
   const session = await requireDmSession();
   const params = await searchParams;
@@ -240,11 +246,13 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     monsterQuery: params.monster,
   });
   const errorMessage = params.error ? dmErrorMessages[params.error] ?? "Unable to save that change." : null;
+  const mailMessage = params.mail ? dmMailMessages[params.mail] ?? null : null;
 
   if (!data) {
     return (
       <main className="app-shell">
         {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
+        {mailMessage ? <p className="callout">{mailMessage}</p> : null}
         <p className="error-banner">No campaigns are available yet.</p>
       </main>
     );
@@ -414,6 +422,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
       </header>
 
       {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
+      {mailMessage ? <p className="callout">{mailMessage}</p> : null}
 
       <section className="hero">
         <span className="section-kicker">
@@ -1619,6 +1628,16 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                       </div>
                       <div className="muted">{formatLootReservationDetail(reservation)}</div>
                       <p>{reservation.detail}</p>
+                      {freshnessTag ? (
+                        <form action={nudgeStaleReservationAction} className="button-row">
+                          <input type="hidden" name="campaignId" value={campaign.id} />
+                          <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                          <input type="hidden" name="lootPoolItemId" value={reservation.id} />
+                          <button className="button-secondary" type="submit">
+                            {freshnessTag === "Overdue" ? "Nudge overdue reservation" : "Nudge stale reservation"}
+                          </button>
+                        </form>
+                      ) : null}
                     </div>
                   );
                 })()
