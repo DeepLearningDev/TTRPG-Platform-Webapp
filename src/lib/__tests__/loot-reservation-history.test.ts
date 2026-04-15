@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   filterLootReservationHistoryByOperator,
+  filterLootReservationHistoryByRecipient,
   filterLootReservationHistoryBySource,
   filterLootReservationHistoryByCharacter,
   formatLootReservationHistoryDetail,
@@ -99,6 +100,10 @@ describe("loot reservation history helpers", () => {
     ).toEqual(["event-1", "event-2"]);
     expect(filterLootReservationHistoryByCharacter(mapped, "char-2").map((entry) => entry.id)).toEqual([
       "event-3",
+    ]);
+    expect(filterLootReservationHistoryByRecipient(entries, "miri vale").map((entry) => entry.id)).toEqual([
+      "event-1",
+      "event-2",
     ]);
   });
 

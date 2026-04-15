@@ -59,6 +59,7 @@ import {
 } from "@/lib/loot-reservation-audit";
 import {
   filterLootReservationHistoryByOperator,
+  filterLootReservationHistoryByRecipient,
   filterLootReservationHistoryBySource,
   formatLootReservationHistoryDetail,
   getLootReservationHistoryOperatorCounts,
@@ -367,7 +368,10 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     reservationOperatorCounts.operators.map((entry) => entry.operator),
   );
   const recentReservationHistory = filterLootReservationHistoryByOperator(
-    filterLootReservationHistoryBySource(recentReservationEvents, reservationSource),
+    filterLootReservationHistoryByRecipient(
+      filterLootReservationHistoryBySource(recentReservationEvents, reservationSource),
+      historyRecipient,
+    ),
     reservationOperator,
   );
   const lootHistorySections = buildLootHistorySections({

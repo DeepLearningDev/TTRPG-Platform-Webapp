@@ -36,6 +36,10 @@ function normalizeReservationHistoryOperator(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+function normalizeReservationHistoryRecipient(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 export function getLootReservationHistorySource(entry: LootReservationEventRecord) {
   const sourceText = entry.lootPoolItem.lootPool.sourceText?.trim();
 
@@ -101,6 +105,22 @@ export function filterLootReservationHistoryByCharacter<T extends LootReservatio
   }
 
   return entries.filter((entry) => entry.characterId === characterId);
+}
+
+export function filterLootReservationHistoryByRecipient<T extends LootReservationEventRecord>(
+  entries: T[],
+  recipient: string,
+) {
+  if (recipient === "all") {
+    return entries;
+  }
+
+  return entries.filter(
+    (entry) =>
+      entry.character?.name &&
+      normalizeReservationHistoryRecipient(entry.character.name) ===
+        normalizeReservationHistoryRecipient(recipient),
+  );
 }
 
 export function getLootReservationHistorySourceCounts<T extends LootReservationEventRecord>(
