@@ -23,6 +23,7 @@ import {
   formatDifficultyLabel,
   formatEnumLabel,
   formatHoldingScopeLabel,
+  formatRelativeTime,
   splitTags,
 } from "@/lib/format";
 import { buildLootPoolDraft } from "@/lib/loot-generation";
@@ -1585,6 +1586,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                   <div className="tag-row">
                     <span className="tag">Reserved</span>
                     <span className="tag">{reservation.reservedForName}</span>
+                    <span className="tag">{formatRelativeTime(reservation.reservedAt)}</span>
                     {reservation.claimInterestNames.length > 0 ? (
                       <span className="tag">{reservation.claimInterestNames.length} interested</span>
                     ) : null}
@@ -1655,6 +1657,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                           {tag}
                         </span>
                       ))}
+                      <span className="tag">{formatRelativeTime(item.createdAt)}</span>
                       {reservationSource !== "all" ? <span className="tag">Source {reservationSource}</span> : null}
                       {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
                     </div>

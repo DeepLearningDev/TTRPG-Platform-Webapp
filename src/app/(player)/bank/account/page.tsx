@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getPlayerAccountBySession } from "@/lib/campaign-vault";
 import { formatCraftingMaterials, parseCraftingMaterials } from "@/lib/crafting-resolution";
-import { formatCopperAsGold, formatEnumLabel } from "@/lib/format";
+import { formatCopperAsGold, formatEnumLabel, formatRelativeTime } from "@/lib/format";
 import {
   formatLootAuditDate,
   formatLootAuditHeadline,
@@ -621,6 +621,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                   </div>
                   <div className="tag-row">
                     <span className="tag">Reserved for you</span>
+                    <span className="tag">{formatRelativeTime(reservation.reservedAt)}</span>
                     {reservation.claimInterestNames.length > 0 ? (
                       <span className="tag">{reservation.claimInterestNames.length} interested</span>
                     ) : null}
@@ -686,6 +687,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                         {tag}
                       </span>
                     ))}
+                    <span className="tag">{formatRelativeTime(item.createdAt)}</span>
                     {reservationSource !== "all" ? <span className="tag">Source {reservationSource}</span> : null}
                     {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
                   </div>
