@@ -23,6 +23,7 @@ import {
   formatDifficultyLabel,
   formatEnumLabel,
   formatHoldingScopeLabel,
+  formatRelativeTime,
   splitTags,
 } from "@/lib/format";
 import { buildLootPoolDraft } from "@/lib/loot-generation";
@@ -53,12 +54,20 @@ import {
 import {
   formatLootReservationDetail,
   formatLootReservationHeadline,
+  getLootReservationFreshnessTag,
   getActiveLootReservations,
 } from "@/lib/loot-reservation-audit";
 import {
+  filterLootReservationHistoryByOperator,
+  filterLootReservationHistoryByRecipient,
+  filterLootReservationHistoryBySource,
   formatLootReservationHistoryDetail,
+  getLootReservationHistoryOperatorCounts,
+  getLootReservationHistorySourceCounts,
   getRecentLootReservationEvents,
   mapLootReservationHistoryItem,
+  parseLootReservationHistoryOperatorFilter,
+  parseLootReservationHistorySourceFilter,
 } from "@/lib/loot-reservation-history";
 import {
   assignLootPoolItemAction,
@@ -82,6 +91,7 @@ import {
   generateLootPoolAction,
   recordStorefrontSaleAction,
   logoutDmAction,
+  nudgeStaleReservationAction,
   replyMailThreadAction,
   reserveLootPoolItemAction,
   rollLootPoolItemAction,
@@ -111,6 +121,9 @@ type DmPageProps = {
     historyScope?: string;
     historyRecipient?: string;
     historySource?: string;
+    reservationSource?: string;
+    reservationOperator?: string;
+    mail?: string;
   }>;
 };
 
@@ -137,11 +150,20 @@ function buildDmHistoryHref(input: {
   historyScope: string;
   historyRecipient?: string;
   historySource?: string;
+  reservationSource?: string;
+  reservationOperator?: string;
 }) {
   const next = new URLSearchParams();
 
   for (const [key, value] of Object.entries(input.params)) {
-    if (!value || key === "historyScope" || key === "historyRecipient" || key === "historySource") {
+    if (
+      !value ||
+      key === "historyScope" ||
+      key === "historyRecipient" ||
+      key === "historySource" ||
+      key === "reservationSource" ||
+      key === "reservationOperator"
+    ) {
       continue;
     }
 
@@ -158,6 +180,14 @@ function buildDmHistoryHref(input: {
 
   if (input.historySource && input.historySource !== "all") {
     next.set("historySource", input.historySource);
+  }
+
+  if (input.reservationSource && input.reservationSource !== "all") {
+    next.set("reservationSource", input.reservationSource);
+  }
+
+  if (input.reservationOperator && input.reservationOperator !== "all") {
+    next.set("reservationOperator", input.reservationOperator);
   }
 
   const query = next.toString();
@@ -204,6 +234,11 @@ const dmErrorMessages: Record<string, string> = {
     "A campaign with that name already exists.",
 };
 
+const dmMailMessages: Record<string, string> = {
+  nudged: "A stale reservation nudge thread was created.",
+  "already-nudged": "A stale reservation nudge thread already exists for that item.",
+};
+
 export default async function DmPage({ searchParams }: DmPageProps) {
   const session = await requireDmSession();
   const params = await searchParams;
@@ -212,11 +247,13 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     monsterQuery: params.monster,
   });
   const errorMessage = params.error ? dmErrorMessages[params.error] ?? "Unable to save that change." : null;
+  const mailMessage = params.mail ? dmMailMessages[params.mail] ?? null : null;
 
   if (!data) {
     return (
       <main className="app-shell">
         {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
+        {mailMessage ? <p className="callout">{mailMessage}</p> : null}
         <p className="error-banner">No campaigns are available yet.</p>
       </main>
     );
@@ -310,7 +347,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
     activeLootReservations,
     historyRecipient,
   );
-  const recentReservationHistory = getRecentLootReservationEvents(
+  const recentReservationEvents = getRecentLootReservationEvents(
     lootPools.flatMap((pool) =>
       pool.items.flatMap((item) =>
         item.reservationEvents.map((event) => ({
@@ -321,15 +358,35 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             quantity: item.quantity,
             lootPool: {
               title: pool.title,
+              sourceText: pool.sourceText,
+              encounter: pool.encounter,
             },
           },
         })),
       ),
     ),
   );
+  const reservationSourceCounts = getLootReservationHistorySourceCounts(recentReservationEvents);
+  const reservationSource = parseLootReservationHistorySourceFilter(
+    params.reservationSource,
+    reservationSourceCounts.sources.map((entry) => entry.source),
+  );
+  const reservationOperatorCounts = getLootReservationHistoryOperatorCounts(recentReservationEvents);
+  const reservationOperator = parseLootReservationHistoryOperatorFilter(
+    params.reservationOperator,
+    reservationOperatorCounts.operators.map((entry) => entry.operator),
+  );
+  const recentReservationHistory = filterLootReservationHistoryByOperator(
+    filterLootReservationHistoryByRecipient(
+      filterLootReservationHistoryBySource(recentReservationEvents, reservationSource),
+      historyRecipient,
+    ),
+    reservationOperator,
+  );
   const lootHistorySections = buildLootHistorySections({
     awards: filteredRecentLootAwards,
     reservations: filteredActiveLootReservations,
+    reservationEvents: recentReservationHistory.map(mapLootReservationHistoryItem),
   });
   const openQuests = quests.filter((quest) => quest.status !== QuestStatus.COMPLETE);
   const activeStorefronts = storefronts.filter(
@@ -366,6 +423,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
       </header>
 
       {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
+      {mailMessage ? <p className="callout">{mailMessage}</p> : null}
 
       <section className="hero">
         <span className="section-kicker">
@@ -1551,21 +1609,39 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           {filteredActiveLootReservations.length > 0 ? (
             <div className="list-card">
               {filteredActiveLootReservations.slice(0, 8).map((reservation) => (
-                <div className="list-item" key={reservation.id}>
-                  <div className="card-header">
-                    <strong>{formatLootReservationHeadline(reservation)}</strong>
-                    <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
-                  </div>
-                  <div className="tag-row">
-                    <span className="tag">Reserved</span>
-                    <span className="tag">{reservation.reservedForName}</span>
-                    {reservation.claimInterestNames.length > 0 ? (
-                      <span className="tag">{reservation.claimInterestNames.length} interested</span>
-                    ) : null}
-                  </div>
-                  <div className="muted">{formatLootReservationDetail(reservation)}</div>
-                  <p>{reservation.detail}</p>
-                </div>
+                (() => {
+                  const freshnessTag = getLootReservationFreshnessTag(reservation.reservedAt);
+
+                  return (
+                    <div className="list-item" key={reservation.id}>
+                      <div className="card-header">
+                        <strong>{formatLootReservationHeadline(reservation)}</strong>
+                        <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
+                      </div>
+                      <div className="tag-row">
+                        <span className="tag">Reserved</span>
+                        <span className="tag">{reservation.reservedForName}</span>
+                        {freshnessTag ? <span className="tag">{freshnessTag}</span> : null}
+                        <span className="tag">{formatRelativeTime(reservation.reservedAt)}</span>
+                        {reservation.claimInterestNames.length > 0 ? (
+                          <span className="tag">{reservation.claimInterestNames.length} interested</span>
+                        ) : null}
+                      </div>
+                      <div className="muted">{formatLootReservationDetail(reservation)}</div>
+                      <p>{reservation.detail}</p>
+                      {freshnessTag ? (
+                        <form action={nudgeStaleReservationAction} className="button-row">
+                          <input type="hidden" name="campaignId" value={campaign.id} />
+                          <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                          <input type="hidden" name="lootPoolItemId" value={reservation.id} />
+                          <button className="button-secondary" type="submit">
+                            {freshnessTag === "Overdue" ? "Nudge overdue reservation" : "Nudge stale reservation"}
+                          </button>
+                        </form>
+                      ) : null}
+                    </div>
+                  );
+                })()
               ))}
             </div>
           ) : (
@@ -1583,10 +1659,73 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               <h3>Recent reservation events</h3>
             </div>
           </div>
+          <div className="tag-row">
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope,
+                historyRecipient,
+                historySource,
+                reservationSource: "all",
+                reservationOperator,
+              })}
+            >
+              All sources {reservationSourceCounts.all}
+            </Link>
+            {reservationSourceCounts.sources.map((entry) => (
+              <Link
+                className="tag"
+                href={buildDmHistoryHref({
+                  params,
+                  historyScope,
+                  historyRecipient,
+                  historySource,
+                  reservationSource: entry.source,
+                  reservationOperator,
+                })}
+                key={entry.source}
+              >
+                {entry.source} {entry.count}
+              </Link>
+            ))}
+          </div>
+          <div className="tag-row">
+            <Link
+              className="tag"
+              href={buildDmHistoryHref({
+                params,
+                historyScope,
+                historyRecipient,
+                historySource,
+                reservationSource,
+                reservationOperator: "all",
+              })}
+            >
+              All operators {reservationOperatorCounts.all}
+            </Link>
+            {reservationOperatorCounts.operators.map((entry) => (
+              <Link
+                className="tag"
+                href={buildDmHistoryHref({
+                  params,
+                  historyScope,
+                  historyRecipient,
+                  historySource,
+                  reservationSource,
+                  reservationOperator: entry.operator,
+                })}
+                key={entry.operator}
+              >
+                {entry.operator} {entry.count}
+              </Link>
+            ))}
+          </div>
           {recentReservationHistory.length > 0 ? (
             <div className="list-card">
               {recentReservationHistory.slice(0, 8).map((event) => {
                 const item = mapLootReservationHistoryItem(event);
+                const freshnessTag = getLootReservationFreshnessTag(item.createdAt);
 
                 return (
                   <div className="list-item" key={item.id}>
@@ -1600,6 +1739,13 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                           {tag}
                         </span>
                       ))}
+                      {freshnessTag ? <span className="tag">{freshnessTag}</span> : null}
+                      <span className="tag">{formatRelativeTime(item.createdAt)}</span>
+                      {reservationSource !== "all" ? <span className="tag">Source {reservationSource}</span> : null}
+                      {reservationOperator !== "all" ? (
+                        <span className="tag">Operator {reservationOperator}</span>
+                      ) : null}
+                      {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
                     </div>
                     <div className="muted">{formatLootReservationHistoryDetail(event)}</div>
                     <p>{item.note}</p>

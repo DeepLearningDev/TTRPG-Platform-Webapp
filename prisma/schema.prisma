@@ -353,6 +353,7 @@ model LootReservationEvent {
   lootPoolItemId String
   characterId   String?
   eventType     LootReservationEventType
+  actorName     String?
   note          String
   createdAt     DateTime                 @default(now())
   campaign      Campaign                 @relation(fields: [campaignId], references: [id], onDelete: Cascade)

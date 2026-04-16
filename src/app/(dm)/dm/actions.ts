@@ -15,6 +15,7 @@ import {
   LootPoolRollStatus,
   LootPoolStatus,
   LootRarity,
+  MailThreadStatus,
   NpcType,
   Prisma,
   QuestStatus,
@@ -115,6 +116,7 @@ async function createLootReservationEvent(
     lootPoolItemId: string;
     characterId?: string | null;
     eventType: LootReservationEventType;
+    actorName?: string | null;
     note: string;
   },
 ) {
@@ -124,6 +126,7 @@ async function createLootReservationEvent(
       lootPoolItemId: input.lootPoolItemId,
       characterId: input.characterId ?? null,
       eventType: input.eventType,
+      actorName: input.actorName ?? null,
       note: input.note,
     },
   });
@@ -132,6 +135,11 @@ async function createLootReservationEvent(
 function redirectToCampaign(slug: string): never {
   revalidatePath("/dm");
   redirect(`/dm?campaign=${slug}`);
+}
+
+function redirectToCampaignWithMessage(slug: string, key: string, value: string): never {
+  revalidatePath("/dm");
+  redirect(`/dm?campaign=${slug}&${key}=${value}`);
 }
 
 function redirectToCampaignError(
@@ -1129,7 +1137,7 @@ export async function generateLootPoolAction(formData: FormData) {
 }
 
 export async function assignLootPoolItemAction(formData: FormData) {
-  await requireDmSession();
+  const session = await requireDmSession();
 
   const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const payload = parseMutationPayload(
@@ -1250,6 +1258,7 @@ export async function assignLootPoolItemAction(formData: FormData) {
           lootPoolItemId: lootPoolItem.id,
           characterId: reservedCharacter.id,
           eventType: LootReservationEventType.RELEASED,
+          actorName: session.username,
           note: `Reservation for ${reservedCharacter.name} was overridden before final delivery.`,
         });
       }
@@ -1259,6 +1268,7 @@ export async function assignLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
         characterId: character.id,
         eventType: LootReservationEventType.AWARDED,
+        actorName: session.username,
         note: `Reservation resolved to ${character.name} via direct assignment to ${formatHoldingScopeLabel(payload.scope)}.`,
       });
     }
@@ -1275,7 +1285,7 @@ export async function assignLootPoolItemAction(formData: FormData) {
 }
 
 export async function rollLootPoolItemAction(formData: FormData) {
-  await requireDmSession();
+  const session = await requireDmSession();
 
   const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const payload = parseMutationPayload(
@@ -1409,6 +1419,7 @@ export async function rollLootPoolItemAction(formData: FormData) {
           lootPoolItemId: lootPoolItem.id,
           characterId: reservedCharacter.id,
           eventType: LootReservationEventType.RELEASED,
+          actorName: session.username,
           note: `Reservation for ${reservedCharacter.name} was released by a party roll.`,
         });
       }
@@ -1418,6 +1429,7 @@ export async function rollLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
         characterId: rollResult.winner.id,
         eventType: LootReservationEventType.AWARDED,
+        actorName: session.username,
         note: `Reservation resolved to ${rollResult.winner.name} via party roll to ${formatHoldingScopeLabel(payload.scope)}.`,
       });
     }
@@ -1434,7 +1446,7 @@ export async function rollLootPoolItemAction(formData: FormData) {
 }
 
 export async function deferLootPoolItemAction(formData: FormData) {
-  await requireDmSession();
+  const session = await requireDmSession();
 
   const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const payload = parseMutationPayload(
@@ -1518,6 +1530,7 @@ export async function deferLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
         characterId: reservedCharacter?.id ?? null,
         eventType: LootReservationEventType.CLEARED,
+        actorName: session.username,
         note:
           payload.status === LootPoolItemStatus.BANKED
             ? `Reservation for ${reservedForName} was cleared and the item returned to the banked pool.`
@@ -1549,7 +1562,7 @@ export async function bankLootPoolItemAction(formData: FormData) {
 }
 
 export async function reserveLootPoolItemAction(formData: FormData) {
-  await requireDmSession();
+  const session = await requireDmSession();
 
   const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
   const payload = parseMutationPayload(
@@ -1635,6 +1648,7 @@ export async function reserveLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
         characterId: previousReservedCharacter?.id ?? null,
         eventType: LootReservationEventType.CLEARED,
+        actorName: session.username,
         note: `Reservation for ${previousReservedForName} was cleared.`,
       });
     }
@@ -1645,6 +1659,7 @@ export async function reserveLootPoolItemAction(formData: FormData) {
         lootPoolItemId: lootPoolItem.id,
         characterId: character.id,
         eventType: LootReservationEventType.RESERVED,
+        actorName: session.username,
         note: `Item reserved for ${character.name}.`,
       });
     }
@@ -2331,6 +2346,102 @@ export async function createMailThreadAction(formData: FormData) {
   });
 
   redirectToCampaign(campaign.slug);
+}
+
+export async function nudgeStaleReservationAction(formData: FormData) {
+  await requireDmSession();
+
+  const rawCampaignSlug = String(formData.get("campaignSlug") ?? "").trim();
+  const payload = parseMutationPayload(
+    z.object({
+      campaignSlug: z.string().min(1),
+      campaignId: z.string().optional(),
+      lootPoolItemId: z.string().min(1),
+    }),
+    {
+      campaignSlug: formData.get("campaignSlug"),
+      campaignId: formData.get("campaignId") || undefined,
+      lootPoolItemId: formData.get("lootPoolItemId"),
+    },
+    {
+      campaignSlug: rawCampaignSlug,
+      error: "invalid-mail-state",
+    },
+  );
+
+  const { campaign, lootPoolItem } = await resolveLootPoolItemMutationContext({
+    campaignSlug: payload.campaignSlug.trim(),
+    campaignId: payload.campaignId?.trim() || null,
+    lootPoolItemId: payload.lootPoolItemId,
+  });
+
+  const reservedForName = parseLootReservedCharacterName(lootPoolItem.resolutionMetadata);
+
+  if (!reservedForName) {
+    redirectToCampaignError(campaign.slug, "invalid-mail-state");
+  }
+
+  const character = await prisma.character.findFirst({
+    where: {
+      campaignId: campaign.id,
+      name: reservedForName,
+    },
+    select: {
+      id: true,
+      name: true,
+      playerName: true,
+    },
+  });
+
+  if (!character) {
+    redirectToCampaignError(campaign.slug, "invalid-mail-state");
+  }
+
+  const reservedDays = Math.floor(
+    Math.max(0, Date.now() - lootPoolItem.updatedAt.getTime()) / (1000 * 60 * 60 * 24),
+  );
+  const sourceText = lootPoolItem.lootPool.title;
+  const nudgeNote = `Auto-created from the stale reservation nudge action. lootPoolItemId=${lootPoolItem.id}`;
+
+  const existingThread = await prisma.mailThread.findFirst({
+    where: {
+      campaignId: campaign.id,
+      subject: `Loot follow-up: ${lootPoolItem.itemNameSnapshot}`,
+      recipientName: character.name,
+      status: MailThreadStatus.ACTIVE,
+      notes: nudgeNote,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (existingThread) {
+    redirectToCampaignWithMessage(campaign.slug, "mail", "already-nudged");
+  }
+
+  await prisma.mailThread.create({
+    data: {
+      campaignId: campaign.id,
+      subject: `Loot follow-up: ${lootPoolItem.itemNameSnapshot}`,
+      senderName: "DM",
+      recipientName: character.name,
+      notes: nudgeNote,
+      messages: {
+        create: {
+          fromName: "DM",
+          toName: character.name,
+          body:
+            `${lootPoolItem.itemNameSnapshot} from ${sourceText} is still reserved for you.` +
+            ` It has been waiting ${reservedDays} day${reservedDays === 1 ? "" : "s"}.` +
+            " Reply if you still want it banked or are ready for final delivery.",
+          isFromDm: true,
+        },
+      },
+    },
+  });
+
+  redirectToCampaignWithMessage(campaign.slug, "mail", "nudged");
 }
 
 export async function replyMailThreadAction(formData: FormData) {

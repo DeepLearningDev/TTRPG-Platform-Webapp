@@ -4,6 +4,7 @@ import {
   formatDifficultyLabel,
   formatEnumLabel,
   formatHoldingScopeLabel,
+  formatRelativeTime,
   splitTags,
 } from "@/lib/format";
 
@@ -43,5 +44,14 @@ describe("enum formatting helpers", () => {
   it("formats holding scopes for user-facing copy", () => {
     expect(formatHoldingScopeLabel("BANK")).toBe("Bank");
     expect(formatHoldingScopeLabel("INVENTORY")).toBe("Inventory");
+  });
+
+  it("formats short relative timestamps", () => {
+    const now = new Date("2026-04-15T12:00:00.000Z");
+
+    expect(formatRelativeTime(new Date("2026-04-15T11:59:45.000Z"), now)).toBe("just now");
+    expect(formatRelativeTime(new Date("2026-04-15T11:40:00.000Z"), now)).toBe("20m ago");
+    expect(formatRelativeTime(new Date("2026-04-15T09:00:00.000Z"), now)).toBe("3h ago");
+    expect(formatRelativeTime(new Date("2026-04-12T12:00:00.000Z"), now)).toBe("3d ago");
   });
 });

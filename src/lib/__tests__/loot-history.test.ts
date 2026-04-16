@@ -26,6 +26,17 @@ describe("loot history sections", () => {
     },
   ];
 
+  const reservationEvents = [
+    {
+      id: "event-1",
+      headline: "Sunforged Band × 1",
+      detail: "Sunken Shrine Spoils · Miri Vale · by dm",
+      note: "Reservation for Miri Vale was cleared.",
+      createdAt: new Date("2026-04-14T00:10:00.000Z"),
+      tags: ["CLEARED"],
+    },
+  ];
+
   const awards = [
     {
       id: "award-1",
@@ -55,15 +66,20 @@ describe("loot history sections", () => {
     const sections = buildLootHistorySections({
       awards,
       reservations,
+      reservationEvents,
     });
 
     expect(sections.map((section) => [section.key, section.count])).toEqual([
-      ["reserved", 1],
+      ["reserved", 2],
       ["claim-approved", 1],
       ["delivered", 1],
     ]);
 
     expect(sections[0]?.items[0]?.tags).toEqual([
+      "Reservation event",
+      "CLEARED",
+    ]);
+    expect(sections[0]?.items[1]?.tags).toEqual([
       "Reserved now",
       "Miri Vale",
       "2 interested",

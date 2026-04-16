@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getPlayerAccountBySession } from "@/lib/campaign-vault";
 import { formatCraftingMaterials, parseCraftingMaterials } from "@/lib/crafting-resolution";
-import { formatCopperAsGold, formatEnumLabel } from "@/lib/format";
+import { formatCopperAsGold, formatEnumLabel, formatRelativeTime } from "@/lib/format";
 import {
   formatLootAuditDate,
   formatLootAuditHeadline,
@@ -22,12 +22,19 @@ import {
 import {
   formatLootReservationDetail,
   formatLootReservationHeadline,
+  getLootReservationFreshnessTag,
   getActiveLootReservations,
 } from "@/lib/loot-reservation-audit";
 import {
+  filterLootReservationHistoryByOperator,
+  filterLootReservationHistoryBySource,
   filterLootReservationHistoryByCharacter,
+  getLootReservationHistoryOperatorCounts,
+  getLootReservationHistorySourceCounts,
   getRecentLootReservationEvents,
   mapLootReservationHistoryItem,
+  parseLootReservationHistoryOperatorFilter,
+  parseLootReservationHistorySourceFilter,
 } from "@/lib/loot-reservation-history";
 import {
   getPlayerLootItemProgress,
@@ -52,6 +59,8 @@ type BankAccountPageProps = {
     mail?: string;
     historyScope?: string;
     historySource?: string;
+    reservationSource?: string;
+    reservationOperator?: string;
   }>;
 };
 
@@ -86,11 +95,19 @@ function buildPlayerHistoryHref(input: {
   params: Awaited<BankAccountPageProps["searchParams"]>;
   historyScope: string;
   historySource?: string;
+  reservationSource?: string;
+  reservationOperator?: string;
 }) {
   const next = new URLSearchParams();
 
   for (const [key, value] of Object.entries(input.params)) {
-    if (!value || key === "historyScope" || key === "historySource") {
+    if (
+      !value ||
+      key === "historyScope" ||
+      key === "historySource" ||
+      key === "reservationSource" ||
+      key === "reservationOperator"
+    ) {
       continue;
     }
 
@@ -103,6 +120,14 @@ function buildPlayerHistoryHref(input: {
 
   if (input.historySource && input.historySource !== "all") {
     next.set("historySource", input.historySource);
+  }
+
+  if (input.reservationSource && input.reservationSource !== "all") {
+    next.set("reservationSource", input.reservationSource);
+  }
+
+  if (input.reservationOperator && input.reservationOperator !== "all") {
+    next.set("reservationOperator", input.reservationOperator);
   }
 
   const query = next.toString();
@@ -181,29 +206,46 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
   const myActiveReservations = activeLootReservations.filter(
     (reservation) => reservation.reservedForName.toLowerCase() === account.name.toLowerCase(),
   );
-  const myReservationHistory = filterLootReservationHistoryByCharacter(
-    getRecentLootReservationEvents(
-      account.lootPools.flatMap((pool) =>
-        pool.items.flatMap((item) =>
-          item.reservationEvents.map((event) => ({
-            ...event,
-            lootPoolItem: {
-              id: item.id,
-              itemNameSnapshot: item.itemNameSnapshot,
-              quantity: item.quantity,
-              lootPool: {
-                title: pool.title,
-              },
+  const recentReservationEvents = getRecentLootReservationEvents(
+    account.lootPools.flatMap((pool) =>
+      pool.items.flatMap((item) =>
+        item.reservationEvents.map((event) => ({
+          ...event,
+          lootPoolItem: {
+            id: item.id,
+            itemNameSnapshot: item.itemNameSnapshot,
+            quantity: item.quantity,
+            lootPool: {
+              title: pool.title,
+              sourceText: pool.sourceText,
+              encounter: pool.encounter,
             },
-          })),
-        ),
+          },
+        })),
       ),
+    ),
+  );
+  const reservationSourceCounts = getLootReservationHistorySourceCounts(recentReservationEvents);
+  const reservationSource = parseLootReservationHistorySourceFilter(
+    params.reservationSource,
+    reservationSourceCounts.sources.map((entry) => entry.source),
+  );
+  const reservationOperatorCounts = getLootReservationHistoryOperatorCounts(recentReservationEvents);
+  const reservationOperator = parseLootReservationHistoryOperatorFilter(
+    params.reservationOperator,
+    reservationOperatorCounts.operators.map((entry) => entry.operator),
+  );
+  const myReservationHistory = filterLootReservationHistoryByCharacter(
+    filterLootReservationHistoryByOperator(
+      filterLootReservationHistoryBySource(recentReservationEvents, reservationSource),
+      reservationOperator,
     ).map(mapLootReservationHistoryItem),
     account.id,
   );
   const lootHistorySections = buildLootHistorySections({
     awards: filteredRecentLootAwards,
     reservations: myActiveReservations,
+    reservationEvents: myReservationHistory,
   });
 
   return (
@@ -595,20 +637,28 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
           {myActiveReservations.length > 0 ? (
             <div className="list-card">
               {myActiveReservations.slice(0, 8).map((reservation) => (
-                <div className="list-item" key={reservation.id}>
-                  <div className="card-header">
-                    <strong>{formatLootReservationHeadline(reservation)}</strong>
-                    <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
-                  </div>
-                  <div className="tag-row">
-                    <span className="tag">Reserved for you</span>
-                    {reservation.claimInterestNames.length > 0 ? (
-                      <span className="tag">{reservation.claimInterestNames.length} interested</span>
-                    ) : null}
-                  </div>
-                  <div className="muted">{formatLootReservationDetail(reservation)}</div>
-                  <p>{reservation.detail}</p>
-                </div>
+                (() => {
+                  const freshnessTag = getLootReservationFreshnessTag(reservation.reservedAt);
+
+                  return (
+                    <div className="list-item" key={reservation.id}>
+                      <div className="card-header">
+                        <strong>{formatLootReservationHeadline(reservation)}</strong>
+                        <span className="tag">{formatLootAuditDate(reservation.reservedAt)}</span>
+                      </div>
+                      <div className="tag-row">
+                        <span className="tag">Reserved for you</span>
+                        {freshnessTag ? <span className="tag">{freshnessTag}</span> : null}
+                        <span className="tag">{formatRelativeTime(reservation.reservedAt)}</span>
+                        {reservation.claimInterestNames.length > 0 ? (
+                          <span className="tag">{reservation.claimInterestNames.length} interested</span>
+                        ) : null}
+                      </div>
+                      <div className="muted">{formatLootReservationDetail(reservation)}</div>
+                      <p>{reservation.detail}</p>
+                    </div>
+                  );
+                })()
               ))}
             </div>
           ) : (
@@ -626,24 +676,95 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
               <h2>Your reservation events</h2>
             </div>
           </div>
+          <div className="tag-row">
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({
+                params,
+                historyScope,
+                historySource,
+                reservationSource: "all",
+                reservationOperator,
+              })}
+            >
+              All sources {reservationSourceCounts.all}
+            </Link>
+            {reservationSourceCounts.sources.map((entry) => (
+              <Link
+                className="tag"
+                href={buildPlayerHistoryHref({
+                  params,
+                  historyScope,
+                  historySource,
+                  reservationSource: entry.source,
+                  reservationOperator,
+                })}
+                key={entry.source}
+              >
+                {entry.source} {entry.count}
+              </Link>
+            ))}
+          </div>
+          <div className="tag-row">
+            <Link
+              className="tag"
+              href={buildPlayerHistoryHref({
+                params,
+                historyScope,
+                historySource,
+                reservationSource,
+                reservationOperator: "all",
+              })}
+            >
+              All operators {reservationOperatorCounts.all}
+            </Link>
+            {reservationOperatorCounts.operators.map((entry) => (
+              <Link
+                className="tag"
+                href={buildPlayerHistoryHref({
+                  params,
+                  historyScope,
+                  historySource,
+                  reservationSource,
+                  reservationOperator: entry.operator,
+                })}
+                key={entry.operator}
+              >
+                {entry.operator} {entry.count}
+              </Link>
+            ))}
+          </div>
           {myReservationHistory.length > 0 ? (
             <div className="list-card">
               {myReservationHistory.slice(0, 8).map((item) => (
-                <div className="list-item" key={item.id}>
-                  <div className="card-header">
-                    <strong>{item.headline}</strong>
-                    <span className="tag">{formatLootAuditDate(item.createdAt)}</span>
-                  </div>
-                  <div className="tag-row">
-                    {item.tags.map((tag) => (
-                      <span className="tag" key={`${item.id}-${tag}`}>
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="muted">{item.detail}</div>
-                  <p>{item.note}</p>
-                </div>
+                (() => {
+                  const freshnessTag = getLootReservationFreshnessTag(item.createdAt);
+
+                  return (
+                    <div className="list-item" key={item.id}>
+                      <div className="card-header">
+                        <strong>{item.headline}</strong>
+                        <span className="tag">{formatLootAuditDate(item.createdAt)}</span>
+                      </div>
+                      <div className="tag-row">
+                        {item.tags.map((tag) => (
+                          <span className="tag" key={`${item.id}-${tag}`}>
+                            {tag}
+                          </span>
+                        ))}
+                        {freshnessTag ? <span className="tag">{freshnessTag}</span> : null}
+                        <span className="tag">{formatRelativeTime(item.createdAt)}</span>
+                        {reservationSource !== "all" ? <span className="tag">Source {reservationSource}</span> : null}
+                        {reservationOperator !== "all" ? (
+                          <span className="tag">Operator {reservationOperator}</span>
+                        ) : null}
+                        {item.actorName ? <span className="tag">Operator {item.actorName}</span> : null}
+                      </div>
+                      <div className="muted">{item.detail}</div>
+                      <p>{item.note}</p>
+                    </div>
+                  );
+                })()
               ))}
             </div>
           ) : (

@@ -167,21 +167,39 @@ export function filterLootReservationsByRecipient<T extends ActiveLootReservatio
 export function buildLootHistorySections(input: {
   awards: LootAuditEntry[];
   reservations: ActiveLootReservation[];
+  reservationEvents?: Array<{
+    id: string;
+    headline: string;
+    detail: string;
+    note: string;
+    createdAt: Date;
+    tags: string[];
+  }>;
 }): LootHistorySection[] {
-  const reservedItems = input.reservations.map<LootHistoryItem>((reservation) => ({
-    id: reservation.id,
-    headline: formatLootReservationHeadline(reservation),
-    detail: formatLootReservationDetail(reservation),
-    note: reservation.detail,
-    happenedAt: reservation.reservedAt,
-    tags: [
-      "Reserved now",
-      reservation.reservedForName,
-      ...(reservation.claimInterestNames.length > 0
-        ? [`${reservation.claimInterestNames.length} interested`]
-        : []),
-    ],
-  }));
+  const reservedItems = [
+    ...input.reservations.map<LootHistoryItem>((reservation) => ({
+      id: reservation.id,
+      headline: formatLootReservationHeadline(reservation),
+      detail: formatLootReservationDetail(reservation),
+      note: reservation.detail,
+      happenedAt: reservation.reservedAt,
+      tags: [
+        "Reserved now",
+        reservation.reservedForName,
+        ...(reservation.claimInterestNames.length > 0
+          ? [`${reservation.claimInterestNames.length} interested`]
+          : []),
+      ],
+    })),
+    ...(input.reservationEvents ?? []).map<LootHistoryItem>((event) => ({
+      id: event.id,
+      headline: event.headline,
+      detail: event.detail,
+      note: event.note,
+      happenedAt: event.createdAt,
+      tags: ["Reservation event", ...event.tags],
+    })),
+  ].sort((left, right) => right.happenedAt.getTime() - left.happenedAt.getTime());
 
   const claimApprovedItems = input.awards
     .filter((entry) => getLootAuditSource(entry).label === "Claim approved")
@@ -216,7 +234,7 @@ export function buildLootHistorySections(input: {
   return [
     {
       key: "reserved",
-      title: "Reserved now",
+      title: "Reservation activity",
       count: reservedItems.length,
       items: reservedItems,
     },
