@@ -236,6 +236,7 @@ const dmErrorMessages: Record<string, string> = {
 
 const dmMailMessages: Record<string, string> = {
   nudged: "A stale reservation nudge thread was created.",
+  "already-nudged": "A stale reservation nudge thread already exists for that item.",
 };
 
 export default async function DmPage({ searchParams }: DmPageProps) {

@@ -15,6 +15,7 @@ import {
   LootPoolRollStatus,
   LootPoolStatus,
   LootRarity,
+  MailThreadStatus,
   NpcType,
   Prisma,
   QuestStatus,
@@ -2400,6 +2401,24 @@ export async function nudgeStaleReservationAction(formData: FormData) {
     Math.max(0, Date.now() - lootPoolItem.updatedAt.getTime()) / (1000 * 60 * 60 * 24),
   );
   const sourceText = lootPoolItem.lootPool.title;
+  const nudgeNote = `Auto-created from the stale reservation nudge action. lootPoolItemId=${lootPoolItem.id}`;
+
+  const existingThread = await prisma.mailThread.findFirst({
+    where: {
+      campaignId: campaign.id,
+      subject: `Loot follow-up: ${lootPoolItem.itemNameSnapshot}`,
+      recipientName: character.name,
+      status: MailThreadStatus.ACTIVE,
+      notes: nudgeNote,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (existingThread) {
+    redirectToCampaignWithMessage(campaign.slug, "mail", "already-nudged");
+  }
 
   await prisma.mailThread.create({
     data: {
@@ -2407,7 +2426,7 @@ export async function nudgeStaleReservationAction(formData: FormData) {
       subject: `Loot follow-up: ${lootPoolItem.itemNameSnapshot}`,
       senderName: "DM",
       recipientName: character.name,
-      notes: "Auto-created from the stale reservation nudge action.",
+      notes: nudgeNote,
       messages: {
         create: {
           fromName: "DM",
