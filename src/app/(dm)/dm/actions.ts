@@ -57,9 +57,11 @@ import {
 import { hashPin } from "@/lib/pin";
 import { prisma } from "@/lib/prisma";
 import {
+  buildStorefrontRestockCandidates,
   calculateStorefrontCurrentPrice,
   generateShopName,
   getDefaultStorefrontCatalog,
+  planAcceptedStorefrontSaleOfferPrice,
   planOnePurchaseDiscount,
   planStorefrontWeeklyRestock,
   scoreStorefrontItemFit,
@@ -2350,13 +2352,14 @@ export async function advanceStorefrontMarketWeekAction(formData: FormData) {
         }),
       ),
     );
-    const restockCandidates = [
-      ...storefront.campaign.lootItems,
-      ...defaultCatalogItems,
-    ].filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index);
+    const restockCandidates = buildStorefrontRestockCandidates({
+      campaignItems: storefront.campaign.lootItems,
+      defaultCatalogItems,
+      existingLootItemIds,
+    });
     const restockPlan = planStorefrontWeeklyRestock({
       shopType: storefront.shopType,
-      items: restockCandidates.filter((item) => !existingLootItemIds.has(item.id)),
+      items: restockCandidates,
       seed: storefront.restockSeed ?? storefront.id,
       marketWeek: nextWeek,
       priceTier: campaign.economyPriceTier,
@@ -2852,13 +2855,12 @@ export async function resolveStorefrontSellRequestAction(formData: FormData) {
     });
 
     if (existingOffer) {
-      const nextQuantity = existingOffer.quantity + request.quantity;
-      const nextSoldToStoreCount = existingOffer.soldToStoreCount + request.quantity;
-      const price = calculateStorefrontCurrentPrice({
+      const pricePlan = planAcceptedStorefrontSaleOfferPrice({
         basePriceCopper: existingOffer.basePriceGold || existingOffer.priceGold,
         purchaseCount: existingOffer.weeklyPurchasedCount,
-        soldToStoreCount: nextSoldToStoreCount,
-        stock: nextQuantity,
+        soldToStoreCount: existingOffer.soldToStoreCount,
+        quantity: existingOffer.quantity,
+        acceptedQuantity: request.quantity,
         priceTier: campaign.economyPriceTier,
       });
 
@@ -2876,8 +2878,8 @@ export async function resolveStorefrontSellRequestAction(formData: FormData) {
           soldToStoreCount: {
             increment: request.quantity,
           },
-          currentPriceGold: price.currentPriceCopper,
-          priceGold: price.currentPriceCopper,
+          currentPriceGold: pricePlan.currentPriceCopper,
+          priceGold: pricePlan.currentPriceCopper,
         },
       });
 

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   applyCampaignEconomyPriceTier,
+  buildStorefrontRestockCandidates,
   calculateNegotiationDc,
   calculateStorefrontCurrentPrice,
   generateShopName,
   getCampaignEconomyPriceTierMultiplier,
   getDefaultStorefrontCatalog,
+  parseStorefrontSellItemRef,
+  planAcceptedStorefrontSaleOfferPrice,
   planOnePurchaseDiscount,
   planStorefrontWeeklyRestock,
   scoreStorefrontItemFit,
@@ -248,5 +251,74 @@ describe("storefront economy helpers", () => {
     });
     expect(blacksmithGoods.some((item) => item.name.includes("Sword"))).toBe(true);
     expect(generalGoods[0]).not.toBe(getDefaultStorefrontCatalog("GENERAL_STORE")[0]);
+  });
+
+  it("deduplicates restock candidates and excludes items already offered", () => {
+    const rope = {
+      id: "rope",
+      kind: "TOOL",
+      rarity: "COMMON",
+      name: "Silk Rope",
+      description: "A travel rope.",
+      sourceTag: "General goods",
+      goldValue: 10,
+    };
+    const oil = {
+      id: "oil",
+      kind: "CONSUMABLE",
+      rarity: "COMMON",
+      name: "Lantern Oil",
+      description: "Camp oil.",
+      sourceTag: "General goods",
+      goldValue: 5,
+    };
+    const sword = {
+      id: "sword",
+      kind: "WEAPON",
+      rarity: "COMMON",
+      name: "Iron Sword",
+      description: "A forged blade.",
+      sourceTag: "Blacksmith goods",
+      goldValue: 25,
+    };
+
+    expect(
+      buildStorefrontRestockCandidates({
+        campaignItems: [rope, sword],
+        defaultCatalogItems: [rope, oil],
+        existingLootItemIds: ["sword"],
+      }).map((item) => item.id),
+    ).toEqual(["rope", "oil"]);
+  });
+
+  it("parses player sell item references without allowing ambiguous sources", () => {
+    expect(parseStorefrontSellItemRef("BANK:loot-1")).toEqual({
+      scope: "BANK",
+      lootItemId: "loot-1",
+    });
+    expect(parseStorefrontSellItemRef("INVENTORY:loot-2")).toEqual({
+      scope: "INVENTORY",
+      lootItemId: "loot-2",
+    });
+    expect(parseStorefrontSellItemRef("VAULT:loot-1")).toBeNull();
+    expect(parseStorefrontSellItemRef("BANK:")).toBeNull();
+    expect(parseStorefrontSellItemRef("BANK:loot-1:extra")).toBeNull();
+  });
+
+  it("plans accepted player-sale stock pricing after supply changes", () => {
+    expect(
+      planAcceptedStorefrontSaleOfferPrice({
+        basePriceCopper: 1000,
+        purchaseCount: 4,
+        soldToStoreCount: 1,
+        quantity: 2,
+        acceptedQuantity: 3,
+        priceTier: "NORMAL",
+      }),
+    ).toEqual({
+      nextQuantity: 5,
+      nextSoldToStoreCount: 4,
+      currentPriceCopper: 1020,
+    });
   });
 });

@@ -43,6 +43,7 @@ import {
 import { decidePlayerQuestAcceptance } from "@/lib/player-quest-acceptance";
 import { planPlayerStorefrontPurchase } from "@/lib/player-storefront-purchase";
 import {
+  parseStorefrontSellItemRef,
   scoreStorefrontItemFit,
   suggestPlayerSellPrice,
 } from "@/lib/storefront-economy";
@@ -724,14 +725,13 @@ export async function requestStorefrontSaleAction(formData: FormData) {
   }
 
   const character = await requirePlayerMutationContext();
-  const [rawScope, lootItemId] = payload.itemRef.split(":", 2);
-  const scope = z.nativeEnum(HoldingScope).safeParse(rawScope).success
-    ? (rawScope as HoldingScope)
-    : null;
+  const itemRef = parseStorefrontSellItemRef(payload.itemRef);
 
-  if (!scope || !lootItemId) {
+  if (!itemRef) {
     redirectToPlayerAccountError("invalid-player-storefront-state");
   }
+
+  const { scope, lootItemId } = itemRef;
 
   const result = await prisma.$transaction(async (tx) => {
     const [storefront, lootItem, heldQuantity, existingRequest] = await Promise.all([

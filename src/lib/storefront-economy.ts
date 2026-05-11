@@ -61,12 +61,28 @@ export type StorefrontRestockItemPlan = {
   fitScore: number;
 };
 
+export type StorefrontRestockCandidate = StorefrontEconomyLootItem & {
+  id: string;
+  goldValue?: number | null;
+};
+
 export type DefaultStorefrontCatalogItem = StorefrontEconomyLootItem & {
   sourceKey: string;
   name: string;
   description: string;
   sourceTag: string;
   goldValue: number;
+};
+
+export type StorefrontSellItemRef = {
+  scope: "BANK" | "INVENTORY";
+  lootItemId: string;
+};
+
+export type AcceptedStorefrontSaleOfferPricePlan = {
+  nextQuantity: number;
+  nextSoldToStoreCount: number;
+  currentPriceCopper: number;
 };
 
 const SHOP_NAME_PARTS: Record<
@@ -641,9 +657,32 @@ export function getDefaultStorefrontCatalog(shopType: ShopType) {
   return DEFAULT_STOREFRONT_CATALOG[shopType].map((item) => ({ ...item }));
 }
 
+export function buildStorefrontRestockCandidates<T extends StorefrontRestockCandidate>(input: {
+  campaignItems: T[];
+  defaultCatalogItems: T[];
+  existingLootItemIds: Iterable<string | null | undefined>;
+}) {
+  const existingLootItemIds = new Set(
+    Array.from(input.existingLootItemIds).filter((id): id is string => Boolean(id)),
+  );
+  const seen = new Set<string>();
+  const candidates: T[] = [];
+
+  for (const item of [...input.campaignItems, ...input.defaultCatalogItems]) {
+    if (seen.has(item.id) || existingLootItemIds.has(item.id)) {
+      continue;
+    }
+
+    seen.add(item.id);
+    candidates.push(item);
+  }
+
+  return candidates;
+}
+
 export function planStorefrontWeeklyRestock(input: {
   shopType: ShopType;
-  items: Array<StorefrontEconomyLootItem & { id: string; goldValue?: number | null }>;
+  items: StorefrontRestockCandidate[];
   seed: string;
   marketWeek: number;
   priceTier?: CampaignEconomyPriceTier;
@@ -729,6 +768,62 @@ function getRestockQuantity(
   const variance = hash % 2;
 
   return clamp(baseQuantity + fitBonus + variance, 1, 5);
+}
+
+export function parseStorefrontSellItemRef(itemRef: string): StorefrontSellItemRef | null {
+  const separatorIndex = itemRef.indexOf(":");
+
+  if (separatorIndex <= 0 || separatorIndex !== itemRef.lastIndexOf(":")) {
+    return null;
+  }
+
+  const scope = itemRef.slice(0, separatorIndex);
+  const lootItemId = itemRef.slice(separatorIndex + 1).trim();
+
+  if ((scope !== "BANK" && scope !== "INVENTORY") || !lootItemId) {
+    return null;
+  }
+
+  return {
+    scope,
+    lootItemId,
+  };
+}
+
+export function planAcceptedStorefrontSaleOfferPrice(input: {
+  basePriceCopper: number;
+  purchaseCount: number;
+  soldToStoreCount: number;
+  quantity: number;
+  acceptedQuantity: number;
+  priceTier?: CampaignEconomyPriceTier;
+}): AcceptedStorefrontSaleOfferPricePlan {
+  if (
+    !isValidCopperAmount(input.basePriceCopper) ||
+    !isValidCopperAmount(input.purchaseCount) ||
+    !isValidCopperAmount(input.soldToStoreCount) ||
+    !isValidCopperAmount(input.quantity) ||
+    !Number.isSafeInteger(input.acceptedQuantity) ||
+    input.acceptedQuantity <= 0
+  ) {
+    throw new Error("Accepted storefront sale inputs must be safe non-negative integers.");
+  }
+
+  const nextQuantity = input.quantity + input.acceptedQuantity;
+  const nextSoldToStoreCount = input.soldToStoreCount + input.acceptedQuantity;
+  const price = calculateStorefrontCurrentPrice({
+    basePriceCopper: input.basePriceCopper,
+    purchaseCount: input.purchaseCount,
+    soldToStoreCount: nextSoldToStoreCount,
+    stock: nextQuantity,
+    priceTier: input.priceTier,
+  });
+
+  return {
+    nextQuantity,
+    nextSoldToStoreCount,
+    currentPriceCopper: price.currentPriceCopper,
+  };
 }
 
 export function calculateNegotiationDc(input: {
