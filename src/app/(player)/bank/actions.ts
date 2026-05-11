@@ -41,11 +41,10 @@ import {
   normalizeBankCharacterName,
 } from "@/lib/player-bank-login";
 import { decidePlayerQuestAcceptance } from "@/lib/player-quest-acceptance";
+import { planPlayerStorefrontSaleRequest } from "@/lib/player-storefront-sale-request";
 import { planPlayerStorefrontPurchase } from "@/lib/player-storefront-purchase";
 import {
   parseStorefrontSellItemRef,
-  scoreStorefrontItemFit,
-  suggestPlayerSellPrice,
 } from "@/lib/storefront-economy";
 
 export async function loginBankAction(formData: FormData) {
@@ -771,51 +770,31 @@ export async function requestStorefrontSaleAction(formData: FormData) {
       }),
     ]);
 
-    if (
-      !storefront ||
-      !lootItem ||
-      existingRequest ||
-      (heldQuantity._sum.quantity ?? 0) < payload.quantity
-    ) {
-      return {
-        ok: false as const,
-        reason: "invalid-player-storefront-state" as const,
-      };
-    }
-
-    const fit = scoreStorefrontItemFit(storefront.shopType, {
-      kind: lootItem.kind,
-      rarity: lootItem.rarity,
-      name: lootItem.name,
-      description: lootItem.description,
-      sourceTag: lootItem.sourceTag,
-    });
-    const priceSuggestion = suggestPlayerSellPrice({
-      fitScore: fit.score,
-      currentPriceCopper: lootItem.goldValue ?? 25,
-      storeCashCopper: storefront.cashOnHand,
+    const saleRequestPlan = planPlayerStorefrontSaleRequest({
+      storefront,
+      lootItem,
+      sellScope: scope,
+      requestedQuantity: payload.quantity,
+      heldQuantity: heldQuantity._sum.quantity ?? 0,
+      hasExistingPendingRequest: Boolean(existingRequest),
+      requestedNote: payload.note,
     });
 
-    if (fit.tier === "POOR" || priceSuggestion.suggestedPriceCopper <= 0) {
-      return {
-        ok: false as const,
-        reason: "invalid-player-storefront-state" as const,
-      };
+    if (!saleRequestPlan.ok) {
+      return saleRequestPlan;
     }
 
     await tx.storefrontSellRequest.create({
       data: {
         campaignId: character.campaignId,
-        storefrontId: storefront.id,
+        storefrontId: saleRequestPlan.requestIntent.storefrontId,
         characterId: character.id,
-        lootItemId: lootItem.id,
-        sellScope: scope,
-        quantity: payload.quantity,
-        suggestedPriceGold: priceSuggestion.suggestedPriceCopper * payload.quantity,
-        fitScore: fit.score,
-        note:
-          payload.note?.trim() ||
-          `Player offered ${payload.quantity} from ${scope.toLowerCase()}.`,
+        lootItemId: saleRequestPlan.requestIntent.lootItemId,
+        sellScope: saleRequestPlan.requestIntent.sellScope,
+        quantity: saleRequestPlan.requestIntent.quantity,
+        suggestedPriceGold: saleRequestPlan.requestIntent.suggestedPriceGold,
+        fitScore: saleRequestPlan.requestIntent.fitScore,
+        note: saleRequestPlan.requestIntent.note,
       },
     });
 
