@@ -12,6 +12,12 @@ enum CampaignStatus {
   ARCHIVED
 }
 
+enum CampaignEconomyPriceTier {
+  CHEAP
+  NORMAL
+  EXPENSIVE
+}
+
 enum NpcType {
   STANDARD
   COMPANION
@@ -36,6 +42,7 @@ enum LedgerEntryType {
   WITHDRAWAL
   TRANSFER
   PURCHASE
+  SALE
   QUEST_REWARD
   CRAFTING_INPUT
   CRAFTING_OUTPUT
@@ -116,6 +123,21 @@ enum StorefrontStatus {
   ARCHIVED
 }
 
+enum StorefrontShopType {
+  GENERAL_STORE
+  BLACKSMITH
+  APOTHECARY
+  ARCANE_SHOP
+  JEWELRY_STORE
+  WOODWORKING_SHOP
+}
+
+enum StorefrontSellRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
 enum MailThreadStatus {
   ACTIVE
   ARCHIVED
@@ -144,6 +166,7 @@ model Campaign {
   slug              String                  @unique
   name              String
   status            CampaignStatus          @default(ACTIVE)
+  economyPriceTier  CampaignEconomyPriceTier @default(NORMAL)
   setting           String
   summary           String
   sessionNight      String?
@@ -157,6 +180,7 @@ model Campaign {
   lootPools         LootPool[]
   quests            Quest[]
   storefronts       Storefront[]
+  storefrontSellRequests StorefrontSellRequest[]
   mailThreads       MailThread[]
   craftingRecipes   CraftingRecipe[]
   craftingJobs      CraftingJob[]
@@ -182,6 +206,7 @@ model Character {
   lootPoolAwards LootPoolItem[]        @relation("LootPoolAwardedCharacter")
   lootPoolRolls LootPoolRollEntry[]    @relation("LootPoolRollCharacter")
   ledgerEntries InventoryLedgerEntry[]
+  storefrontSellRequests StorefrontSellRequest[]
   reservationEvents LootReservationEvent[] @relation("LootReservationEventCharacter")
 
   @@unique([campaignId, name])
@@ -301,6 +326,7 @@ model LootItem {
   lootPoolItems  LootPoolItem[]
   craftingJobs   CraftingJob[]          @relation("CraftingJobLootItem")
   storefrontOffers StorefrontOffer[]     @relation("StorefrontOfferLootItem")
+  storefrontSellRequests StorefrontSellRequest[]
 
   @@unique([campaignId, sourceKey])
 }
@@ -397,12 +423,20 @@ model Storefront {
   name        String
   keeperName  String?
   description String
+  shopType    StorefrontShopType @default(GENERAL_STORE)
+  cashOnHand  Int               @default(1000)
+  marketWeek  Int               @default(1)
+  restockSeed String?
+  allowsPersuasion Boolean      @default(true)
+  allowsIntimidation Boolean    @default(false)
+  lastRestockedAt DateTime?
   status      StorefrontStatus  @default(ACTIVE)
   notes       String?
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   campaign    Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   offers      StorefrontOffer[]
+  sellRequests StorefrontSellRequest[]
 }
 
 model StorefrontOffer {
@@ -414,12 +448,45 @@ model StorefrontOffer {
   rarity          LootRarity
   kind            LootKind
   priceGold       Int
+  basePriceGold   Int         @default(0)
+  currentPriceGold Int        @default(0)
   quantity        Int         @default(1)
+  weeklyStock     Int         @default(1)
+  weeklyPurchasedCount Int    @default(0)
+  lifetimePurchasedCount Int  @default(0)
+  soldToStoreCount Int        @default(0)
+  negotiatedPriceGold Int?
+  negotiatedByName String?
+  negotiationNote String?
   notes           String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
   storefront      Storefront  @relation(fields: [storefrontId], references: [id], onDelete: Cascade)
   lootItem        LootItem?   @relation("StorefrontOfferLootItem", fields: [lootItemId], references: [id], onDelete: SetNull)
+
+  @@unique([storefrontId, lootItemId])
+}
+
+model StorefrontSellRequest {
+  id              String      @id @default(cuid())
+  campaignId      String
+  storefrontId    String
+  characterId     String
+  lootItemId      String
+  sellScope       HoldingScope @default(BANK)
+  quantity        Int         @default(1)
+  suggestedPriceGold Int
+  status          StorefrontSellRequestStatus @default(PENDING)
+  fitScore        Int         @default(0)
+  note            String?
+  dmNote          String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  resolvedAt      DateTime?
+  campaign        Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  storefront      Storefront  @relation(fields: [storefrontId], references: [id], onDelete: Cascade)
+  character       Character   @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  lootItem        LootItem    @relation(fields: [lootItemId], references: [id], onDelete: Cascade)
 }
 
 model MailThread {

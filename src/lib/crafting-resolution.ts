@@ -1,4 +1,10 @@
-import { CraftingResolutionOutcome, HoldingScope, LootRarity } from "@prisma/client";
+import {
+  CraftingJobStatus,
+  CraftingResolutionOutcome,
+  HoldingScope,
+  LootKind,
+  LootRarity,
+} from "@prisma/client";
 
 export type CraftingMaterialRequirement = {
   key: string;
@@ -32,6 +38,65 @@ type CraftingMaterialStatus = {
 };
 
 type ConsumptionMode = "full" | "failure";
+
+type CraftingRecipeFields = {
+  outputName: string;
+  outputDescription: string;
+  outputRarity: LootRarity;
+  outputKind: LootKind;
+  goldCost: number;
+};
+
+export type PlannedCraftingConsumptionEntry = CraftingMaterialHolding & {
+  note: string;
+};
+
+export type PlannedCraftingGoldCostLedgerIntent = {
+  scope: HoldingScope;
+  goldDelta: number;
+  note: string;
+};
+
+export type PlannedCraftingOutputItemIntent = {
+  existingLootItemId: string | null;
+  createLootItem:
+    | {
+        name: string;
+        rarity: LootRarity;
+        kind: LootKind;
+        description: string;
+        sourceTag: string;
+      }
+    | null;
+  ledgerEntry: {
+    scope: HoldingScope;
+    quantity: number;
+    note: string;
+  };
+};
+
+export type PlannedCraftingJobPatch = {
+  status: CraftingJobStatus;
+  resolutionOutcome: CraftingResolutionOutcome;
+  resolutionText: string;
+  rollDie: number;
+  rollTotal: number;
+  resolvedAt: Date;
+};
+
+export type PlannedCraftingCompletion =
+  | {
+      isMet: false;
+    }
+  | {
+      isMet: true;
+      consumptionEntries: PlannedCraftingConsumptionEntry[];
+      goldCostLedgerIntent: PlannedCraftingGoldCostLedgerIntent | null;
+      outputItemIntent: PlannedCraftingOutputItemIntent | null;
+      jobPatch: PlannedCraftingJobPatch;
+      outcomeKey: string;
+      outcomeText: string;
+    };
 
 export function normalizeCraftingMaterialKey(value: string) {
   return value
@@ -259,5 +324,96 @@ export function resolveCraftingOutcome(input: {
     dc,
     total,
     resolutionText: `${input.outputName} collapses before the final bind holds. One staged unit of each required material is lost and no finished item is produced.`,
+  };
+}
+
+export function planCraftingCompletion(input: {
+  recipe: CraftingRecipeFields;
+  characterLevel: number;
+  requirements: CraftingMaterialRequirement[];
+  holdings: CraftingMaterialHolding[];
+  destinationScope: HoldingScope;
+  dieRoll: number;
+  existingLootItemId: string | null;
+  resolvedAt: Date;
+}): PlannedCraftingCompletion {
+  const fullMaterialPlan = input.requirements.length
+    ? buildCraftingConsumptionPlan(input.requirements, input.holdings, "full")
+    : { isMet: true, consumption: [] };
+
+  if (!fullMaterialPlan.isMet) {
+    return {
+      isMet: false,
+    };
+  }
+
+  const resolution = resolveCraftingOutcome({
+    level: input.characterLevel,
+    rarity: input.recipe.outputRarity,
+    outputName: input.recipe.outputName,
+    dieRoll: input.dieRoll,
+  });
+  const outcomeKey = resolution.outcome.toLowerCase();
+  const consumptionPlan = buildCraftingConsumptionPlan(
+    input.requirements,
+    input.holdings,
+    resolution.outcome === CraftingResolutionOutcome.FAILURE ? "failure" : "full",
+  );
+
+  if (!consumptionPlan.isMet) {
+    return {
+      isMet: false,
+    };
+  }
+
+  const outcomeText = `Roll ${resolution.dieRoll} + ${resolution.skillBonus} = ${resolution.total} vs DC ${resolution.dc}. ${resolution.resolutionText}`;
+  const createsOutput = resolution.outcome !== CraftingResolutionOutcome.FAILURE;
+
+  return {
+    isMet: true,
+    consumptionEntries: consumptionPlan.consumption.map((material) => ({
+      ...material,
+      note: `Spent ${material.quantity}x ${material.name} on ${input.recipe.outputName} (${outcomeKey} result)`,
+    })),
+    goldCostLedgerIntent:
+      createsOutput && input.recipe.goldCost > 0
+        ? {
+            scope: HoldingScope.BANK,
+            goldDelta: -input.recipe.goldCost,
+            note: `Spent ${input.recipe.outputName} crafting costs (${outcomeKey} result)`,
+          }
+        : null,
+    outputItemIntent: createsOutput
+      ? {
+          existingLootItemId: input.existingLootItemId,
+          createLootItem: input.existingLootItemId
+            ? null
+            : {
+                name: input.recipe.outputName,
+                rarity: input.recipe.outputRarity,
+                kind: input.recipe.outputKind,
+                description: input.recipe.outputDescription,
+                sourceTag: "Crafted item",
+              },
+          ledgerEntry: {
+            scope: input.destinationScope,
+            quantity: 1,
+            note:
+              resolution.outcome === CraftingResolutionOutcome.MIXED
+                ? `Crafted ${input.recipe.outputName} with a mixed result`
+                : `Crafted ${input.recipe.outputName}`,
+          },
+        }
+      : null,
+    jobPatch: {
+      status: CraftingJobStatus.COMPLETE,
+      resolutionOutcome: resolution.outcome,
+      resolutionText: outcomeText,
+      rollDie: resolution.dieRoll,
+      rollTotal: resolution.total,
+      resolvedAt: input.resolvedAt,
+    },
+    outcomeKey,
+    outcomeText,
   };
 }

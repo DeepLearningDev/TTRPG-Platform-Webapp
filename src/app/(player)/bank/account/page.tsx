@@ -2,7 +2,11 @@ import { Coins, Package2, ScrollText, Store, Wrench } from "lucide-react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getPlayerAccountBySession } from "@/lib/campaign-vault";
-import { formatCraftingMaterials, parseCraftingMaterials } from "@/lib/crafting-resolution";
+import {
+  deriveCraftingHoldings,
+  formatCraftingMaterials,
+  parseCraftingMaterials,
+} from "@/lib/crafting-resolution";
 import { formatCopperAsGold, formatEnumLabel, formatRelativeTime } from "@/lib/format";
 import {
   formatLootAuditDate,
@@ -40,16 +44,24 @@ import {
   getPlayerLootItemProgress,
   summarizePlayerLootPool,
 } from "@/lib/loot-progress";
+import {
+  canPlayerMarkLootClaimInterest,
+  canPlayerRespondToLootPoolItem,
+} from "@/lib/player-flow-rules";
 import { clearPlayerSession, getPlayerSession } from "@/lib/player-session";
 import {
   acceptQuestAction,
+  buyStorefrontOfferAction,
   logoutBankAction,
   markLootClaimInterestAction,
   passOnLootPoolItemAction,
   replyToMailThreadAction,
+  requestStorefrontSaleAction,
+  requestCraftingJobAction,
   rollOnLootPoolItemAction,
   withdrawLootClaimInterestAction,
 } from "../actions";
+import { planPlayerCraftingRequest } from "@/lib/player-crafting-request";
 
 type BankAccountPageProps = {
   searchParams: Promise<{
@@ -61,6 +73,8 @@ type BankAccountPageProps = {
     historySource?: string;
     reservationSource?: string;
     reservationOperator?: string;
+    storefront?: string;
+    crafting?: string;
   }>;
 };
 
@@ -80,6 +94,15 @@ const mailActionMessages: Record<string, string> = {
   sent: "Your reply was posted to that mail thread.",
 };
 
+const storefrontActionMessages: Record<string, string> = {
+  purchased: "Your purchase was added to your bank inventory.",
+  "sale-requested": "Your sale request is waiting for DM review.",
+};
+
+const craftingActionMessages: Record<string, string> = {
+  requested: "Your crafting request is waiting for DM resolution.",
+};
+
 const lootErrorMessages: Record<string, string> = {
   "invalid-loot-pool-state":
     "That loot item is no longer open for your character.",
@@ -89,6 +112,14 @@ const lootErrorMessages: Record<string, string> = {
     "That quest is no longer available for your character to accept or acknowledge.",
   "invalid-player-mail-state":
     "That mail reply could not be posted because the thread is no longer available to your character.",
+  "invalid-player-storefront-state":
+    "That shop offer is no longer available for your character.",
+  "insufficient-player-gold":
+    "Your banked gold cannot cover that request.",
+  "invalid-player-crafting-state":
+    "That crafting recipe is no longer available for your character.",
+  "insufficient-crafting-materials":
+    "Your inventory and bank do not have the required crafting materials yet.",
 };
 
 function buildPlayerHistoryHref(input: {
@@ -155,6 +186,12 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
   const successMessage = params.loot ? lootActionMessages[params.loot] ?? null : null;
   const questMessage = params.quest ? questActionMessages[params.quest] ?? null : null;
   const mailMessage = params.mail ? mailActionMessages[params.mail] ?? null : null;
+  const storefrontMessage = params.storefront
+    ? storefrontActionMessages[params.storefront] ?? null
+    : null;
+  const craftingMessage = params.crafting
+    ? craftingActionMessages[params.crafting] ?? null
+    : null;
   const errorMessage = params.error
     ? lootErrorMessages[params.error] ?? "Unable to save that loot response."
     : null;
@@ -247,6 +284,24 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
     reservations: myActiveReservations,
     reservationEvents: myReservationHistory,
   });
+  const craftingMaterialHoldings = deriveCraftingHoldings(account.ledgerEntries);
+  const activeCraftingJobRecipeIds = new Set(
+    account.campaign.craftingJobs
+      .filter((job) => job.characterId === account.id && job.status === "IN_PROGRESS" && job.recipeId)
+      .map((job) => job.recipeId),
+  );
+  const sellableItems = [
+    ...account.bankSnapshot.items.map((item) => ({
+      ...item,
+      scope: "BANK" as const,
+      scopeLabel: "Bank",
+    })),
+    ...account.inventorySnapshot.items.map((item) => ({
+      ...item,
+      scope: "INVENTORY" as const,
+      scopeLabel: "Inventory",
+    })),
+  ];
 
   return (
     <main className="app-shell">
@@ -271,6 +326,8 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
       {successMessage ? <p className="callout">{successMessage}</p> : null}
       {questMessage ? <p className="callout">{questMessage}</p> : null}
       {mailMessage ? <p className="callout">{mailMessage}</p> : null}
+      {storefrontMessage ? <p className="callout">{storefrontMessage}</p> : null}
+      {craftingMessage ? <p className="callout">{craftingMessage}</p> : null}
 
       <section className="hero">
         <span className="section-kicker">
@@ -395,10 +452,10 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                         item,
                       });
                       const myRoll = progress.myRoll;
-                      const canRespond =
-                        item.status === "UNRESOLVED" &&
-                        item.distributionMode === "ROLL" &&
-                        !myRoll;
+                      const canRespond = canPlayerRespondToLootPoolItem({
+                        accountId: account.id,
+                        item,
+                      });
 
                       return (
                         <div className="list-item" key={item.id}>
@@ -427,7 +484,7 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                             </p>
                           ) : null}
                           {item.resolutionMetadata ? <p className="muted">{item.resolutionMetadata}</p> : null}
-                          {progress.key === "banked" && !progress.reservedForName ? (
+                          {canPlayerMarkLootClaimInterest({ progress }) ? (
                             <div className="button-row">
                               {progress.hasClaimInterest ? (
                                 <form action={withdrawLootClaimInterestAction}>
@@ -893,13 +950,91 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
                     <span className="tag">{storefront.offers.length} offer(s)</span>
                   </div>
                   <p>{storefront.description}</p>
-                  <div className="tag-row">
-                    {storefront.offers.slice(0, 4).map((offer) => (
-                      <span className="tag" key={offer.id}>
-                        {offer.itemName} · {formatCopperAsGold(offer.priceGold * 100)}
-                      </span>
-                    ))}
+                  <div className="list-card">
+                    {storefront.offers.map((offer) => {
+                      const currentPrice =
+                        offer.negotiatedPriceGold ?? (offer.currentPriceGold || offer.priceGold);
+                      const canBuyOffer =
+                        offer.quantity > 0 && account.bankSnapshot.gold >= currentPrice;
+
+                      return (
+                        <div className="list-item" key={offer.id}>
+                          <div className="card-header">
+                            <div>
+                              <strong>{offer.itemName}</strong>
+                              <p className="muted">
+                                {formatEnumLabel(offer.rarity)} · {formatEnumLabel(offer.kind)} ·{" "}
+                                {formatCopperAsGold(currentPrice)}
+                                {offer.negotiatedPriceGold
+                                  ? ` negotiated from ${formatCopperAsGold(offer.currentPriceGold || offer.priceGold)}`
+                                  : ""}
+                              </p>
+                            </div>
+                            <span className="tag">Stock {offer.quantity}</span>
+                          </div>
+                          <p>{offer.itemDescription}</p>
+                          {offer.notes ? <p className="muted">{offer.notes}</p> : null}
+                          <form action={buyStorefrontOfferAction} className="button-row">
+                            <input type="hidden" name="offerId" value={offer.id} />
+                            <input type="hidden" name="quantity" value="1" />
+                            <button
+                              className="button-secondary"
+                              disabled={!canBuyOffer}
+                              type="submit"
+                            >
+                              {offer.quantity <= 0
+                                ? "Sold out"
+                                : canBuyOffer
+                                  ? "Buy 1"
+                                  : "Need more gold"}
+                            </button>
+                          </form>
+                        </div>
+                      );
+                    })}
                   </div>
+                  {sellableItems.length > 0 ? (
+                    <form action={requestStorefrontSaleAction} className="stack-form">
+                      <input type="hidden" name="storefrontId" value={storefront.id} />
+                      <div className="subgrid">
+                        <label className="field-label">
+                          Sell item
+                          <select
+                            name="itemRef"
+                            defaultValue={`${sellableItems[0]?.scope}:${sellableItems[0]?.id}`}
+                          >
+                            {sellableItems.map((item) => (
+                              <option key={`${item.scope}:${item.id}`} value={`${item.scope}:${item.id}`}>
+                                {item.name} ({item.quantity}, {item.scopeLabel})
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="field-label">
+                          Quantity
+                          <input defaultValue="1" min="1" name="quantity" type="number" />
+                        </label>
+                      </div>
+                      <label className="field-label">
+                        Sale note
+                        <textarea name="note" placeholder="Why this shop might want the item." />
+                      </label>
+                      <div className="button-row">
+                        <button className="button-secondary" type="submit">
+                          Request sale
+                        </button>
+                      </div>
+                    </form>
+                  ) : null}
+                  {storefront.sellRequests.length > 0 ? (
+                    <div className="tag-row">
+                      {storefront.sellRequests.map((request) => (
+                        <span className="tag" key={request.id}>
+                          {request.lootItem.name}: {formatEnumLabel(request.status)}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))
             ) : (
@@ -976,6 +1111,77 @@ export default async function BankAccountPage({ searchParams }: BankAccountPageP
             </div>
           </div>
           <div className="card-stack">
+            {account.campaign.craftingRecipes.length > 0 ? (
+              <div className="item-card">
+                <div className="card-header">
+                  <div>
+                    <div className="value-line">Available recipes</div>
+                    <div className="muted">Request work when your bank has the gold and materials.</div>
+                  </div>
+                  <span className="tag">{account.campaign.craftingRecipes.length} recipe(s)</span>
+                </div>
+                <div className="list-card">
+                  {account.campaign.craftingRecipes.map((recipe) => {
+                    const requestPlan = planPlayerCraftingRequest({
+                      recipe,
+                      craftingMaterialHoldings,
+                      currentBankCopperBalance: account.bankSnapshot.gold,
+                    });
+                    const alreadyRequested = activeCraftingJobRecipeIds.has(recipe.id);
+                    const canRequest = requestPlan.ok && !alreadyRequested;
+                    const blockedMessage = alreadyRequested
+                      ? "You already have this recipe in progress."
+                      : !requestPlan.ok && requestPlan.reason === "insufficient-crafting-materials"
+                        ? `Missing ${requestPlan.materialSummary?.missing.join(", ") ?? "materials"}.`
+                        : !requestPlan.ok && requestPlan.reason === "insufficient-player-gold"
+                          ? `Requires ${formatCopperAsGold(requestPlan.goldSummary?.required ?? 0)}.`
+                          : !requestPlan.ok
+                            ? "Recipe is not ready for player requests."
+                            : null;
+
+                    return (
+                      <div className="list-item" key={recipe.id}>
+                        <div className="card-header">
+                          <div>
+                            <strong>{recipe.name}</strong>
+                            <p className="muted">
+                              {recipe.outputName} · {formatEnumLabel(recipe.outputRarity)} ·{" "}
+                              {formatCopperAsGold(recipe.goldCost)}
+                            </p>
+                          </div>
+                          <span className="tag">{recipe.timeText ?? "DM-timed"}</span>
+                        </div>
+                        <p>{recipe.outputDescription}</p>
+                        <p className="muted">
+                          <strong>Materials:</strong>{" "}
+                          {formatCraftingMaterials(parseCraftingMaterials(recipe.materialsText))}
+                        </p>
+                        {blockedMessage ? <p className="muted">{blockedMessage}</p> : null}
+                        <form action={requestCraftingJobAction} className="stack-form">
+                          <input type="hidden" name="recipeId" value={recipe.id} />
+                          <label className="field-label">
+                            Request note
+                            <textarea
+                              name="notes"
+                              placeholder="Optional details for the DM."
+                            />
+                          </label>
+                          <div className="button-row">
+                            <button
+                              className="button-secondary"
+                              disabled={!canRequest}
+                              type="submit"
+                            >
+                              {canRequest ? "Request crafting" : "Unavailable"}
+                            </button>
+                          </div>
+                        </form>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
             {account.campaign.craftingJobs.length > 0 ? (
               account.campaign.craftingJobs.map((job) => (
                 <div className="item-card" key={job.id}>

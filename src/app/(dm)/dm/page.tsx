@@ -1,4 +1,5 @@
 import {
+  CampaignEconomyPriceTier,
   CraftingJobStatus,
   MailThreadStatus,
   EncounterDifficulty,
@@ -6,12 +7,17 @@ import {
   LootKind,
   LootRarity,
   QuestStatus,
+  StorefrontShopType,
   StorefrontStatus,
 } from "@prisma/client";
 import { Compass, Coins, Package2, ScrollText, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { requireDmSession } from "@/lib/dm-session";
-import { getDashboardData } from "@/lib/campaign-vault";
+import {
+  getDashboardData,
+  getMailThreadReplySummary,
+  orderMailThreadsByFocus,
+} from "@/lib/campaign-vault";
 import {
   deriveCraftingHoldings,
   formatCraftingMaterials,
@@ -87,9 +93,12 @@ import {
   createQuestAction,
   createStorefrontAction,
   createStorefrontOfferAction,
+  advanceStorefrontMarketWeekAction,
   finalizeLootPoolAction,
   generateLootPoolAction,
+  negotiateStorefrontOfferAction,
   recordStorefrontSaleAction,
+  resolveStorefrontSellRequestAction,
   logoutDmAction,
   nudgeStaleReservationAction,
   replyMailThreadAction,
@@ -97,10 +106,15 @@ import {
   rollLootPoolItemAction,
   syncCompendiumAction,
   updateCharacterAction,
+  updateCampaignEconomyPriceTierAction,
   updateNpcAction,
   updateQuestAction,
   updateStorefrontAction,
 } from "./actions";
+import {
+  calculateNegotiationDc,
+  scoreStorefrontItemFit,
+} from "@/lib/storefront-economy";
 
 type DmPageProps = {
   searchParams: Promise<{
@@ -124,6 +138,7 @@ type DmPageProps = {
     reservationSource?: string;
     reservationOperator?: string;
     mail?: string;
+    mailThread?: string;
   }>;
 };
 
@@ -248,6 +263,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
   });
   const errorMessage = params.error ? dmErrorMessages[params.error] ?? "Unable to save that change." : null;
   const mailMessage = params.mail ? dmMailMessages[params.mail] ?? null : null;
+  const focusedMailThreadId = readOptionalSearchText(params.mailThread);
 
   if (!data) {
     return (
@@ -395,6 +411,12 @@ export default async function DmPage({ searchParams }: DmPageProps) {
   const openMailThreads = mailThreads.filter(
     (thread) => thread.status === MailThreadStatus.ACTIVE,
   );
+  const { focusedMailThread, orderedMailThreads } = orderMailThreadsByFocus(
+    mailThreads,
+    focusedMailThreadId,
+  );
+
+  const isFocusedMailThread = (threadId: string) => threadId === focusedMailThread?.id;
   const activeCraftingJobs = craftingJobs.filter(
     (job) => job.status !== CraftingJobStatus.COMPLETE,
   );
@@ -437,6 +459,22 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             Synced {formatEnumLabel(params.sync)} from {formatEnumLabel(params.source ?? "")}.
           </p>
         ) : null}
+        <form action={updateCampaignEconomyPriceTierAction} className="button-row">
+          <input type="hidden" name="campaignSlug" value={campaign.slug} />
+          <label className="field-label">
+            Economy prices
+            <select defaultValue={campaign.economyPriceTier} name="economyPriceTier">
+              {Object.values(CampaignEconomyPriceTier).map((tier) => (
+                <option key={tier} value={tier}>
+                  {formatEnumLabel(tier)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="button-secondary" type="submit">
+            Update prices
+          </button>
+        </form>
         <div className="pill-row">
           {campaigns.map((option) => (
             <Link
@@ -458,6 +496,10 @@ export default async function DmPage({ searchParams }: DmPageProps) {
         <article className="metric-card">
           <span className="metric-label">Session night</span>
           <div className="metric-value">{campaign.sessionNight ?? "TBD"}</div>
+        </article>
+        <article className="metric-card">
+          <span className="metric-label">Economy</span>
+          <div className="metric-value">{formatEnumLabel(campaign.economyPriceTier)}</div>
         </article>
         <article className="metric-card">
           <span className="metric-label">Active NPCs</span>
@@ -494,6 +536,16 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               <label className="field-label">
                 Session night
                 <input name="sessionNight" placeholder="Wednesday" />
+              </label>
+              <label className="field-label">
+                Economy prices
+                <select name="economyPriceTier" defaultValue={CampaignEconomyPriceTier.NORMAL}>
+                  {Object.values(CampaignEconomyPriceTier).map((tier) => (
+                    <option key={tier} value={tier}>
+                      {formatEnumLabel(tier)}
+                    </option>
+                  ))}
+                </select>
               </label>
             </div>
             <label className="field-label">
@@ -2137,11 +2189,25 @@ export default async function DmPage({ searchParams }: DmPageProps) {
             <div className="subgrid">
               <label className="field-label">
                 Store name
-                <input name="name" placeholder="Rook's Reliquary" required />
+                <input name="name" placeholder="Leave blank to generate" />
               </label>
               <label className="field-label">
                 Keeper
                 <input name="keeperName" placeholder="Rook the vendor" />
+              </label>
+              <label className="field-label">
+                Shop type
+                <select name="shopType" defaultValue={StorefrontShopType.GENERAL_STORE}>
+                  {Object.values(StorefrontShopType).map((type) => (
+                    <option key={type} value={type}>
+                      {formatEnumLabel(type)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field-label">
+                Cash on hand
+                <input defaultValue="1000" min="0" name="cashOnHand" type="number" />
               </label>
             </div>
             <label className="field-label">
@@ -2152,6 +2218,16 @@ export default async function DmPage({ searchParams }: DmPageProps) {
               Notes
               <textarea name="notes" placeholder="Rotating stock, rumors, or special rules." />
             </label>
+            <div className="button-row">
+              <label className="toggle-label">
+                <input defaultChecked name="allowsPersuasion" type="checkbox" />
+                Persuasion available
+              </label>
+              <label className="toggle-label">
+                <input name="allowsIntimidation" type="checkbox" />
+                Intimidation available
+              </label>
+            </div>
             <div className="button-row">
               <button className="button" type="submit">
                 Add storefront
@@ -2165,12 +2241,22 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                 <div className="card-header">
                   <div>
                     <div className="value-line">{storefront.name}</div>
-                    <div className="muted">{storefront.keeperName ?? "No keeper listed"}</div>
+                    <div className="muted">
+                      {storefront.keeperName ?? "No keeper listed"} · {formatEnumLabel(storefront.shopType)} · Week{" "}
+                      {storefront.marketWeek} · Cash {formatCopperAsGold(storefront.cashOnHand)}
+                    </div>
                   </div>
                   <span className="tag">{formatEnumLabel(storefront.status)}</span>
                 </div>
                 <p>{storefront.description}</p>
                 {storefront.notes ? <p className="muted">{storefront.notes}</p> : null}
+                <form action={advanceStorefrontMarketWeekAction} className="button-row">
+                  <input type="hidden" name="storefrontId" value={storefront.id} />
+                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                  <button className="button-secondary" type="submit">
+                    Advance market week
+                  </button>
+                </form>
 
                 <form action={updateStorefrontAction} className="stack-form">
                   <input type="hidden" name="id" value={storefront.id} />
@@ -2194,6 +2280,20 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                         ))}
                       </select>
                     </label>
+                    <label className="field-label">
+                      Shop type
+                      <select defaultValue={storefront.shopType} name="shopType">
+                        {Object.values(StorefrontShopType).map((type) => (
+                          <option key={type} value={type}>
+                            {formatEnumLabel(type)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field-label">
+                      Cash on hand
+                      <input defaultValue={storefront.cashOnHand} min="0" name="cashOnHand" type="number" />
+                    </label>
                   </div>
                   <label className="field-label">
                     Description
@@ -2204,6 +2304,24 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                     <textarea defaultValue={storefront.notes ?? ""} name="notes" />
                   </label>
                   <div className="button-row">
+                    <label className="toggle-label">
+                      <input
+                        defaultChecked={storefront.allowsPersuasion}
+                        name="allowsPersuasion"
+                        type="checkbox"
+                      />
+                      Persuasion available
+                    </label>
+                    <label className="toggle-label">
+                      <input
+                        defaultChecked={storefront.allowsIntimidation}
+                        name="allowsIntimidation"
+                        type="checkbox"
+                      />
+                      Intimidation available
+                    </label>
+                  </div>
+                  <div className="button-row">
                     <button className="button-secondary" type="submit">
                       Update storefront
                     </button>
@@ -2211,20 +2329,68 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                 </form>
 
                 <div className="list-card">
-                  {storefront.offers.map((offer) => (
+                  {storefront.offers.map((offer) => {
+                    const fit = scoreStorefrontItemFit(storefront.shopType, {
+                      kind: offer.kind,
+                      rarity: offer.rarity,
+                      name: offer.itemName,
+                      description: offer.itemDescription,
+                      sourceTag: offer.lootItem?.sourceTag,
+                    });
+                    const negotiationDc = calculateNegotiationDc({
+                      fitScore: fit.score,
+                      rarity: offer.rarity,
+                    });
+                    const currentPrice =
+                      offer.negotiatedPriceGold ?? (offer.currentPriceGold || offer.priceGold);
+
+                    return (
                     <div className="list-item" key={offer.id}>
                       <div className="card-header">
                         <div>
                           <strong>{offer.itemName}</strong>
                           <div className="muted">
                             {formatEnumLabel(offer.rarity)} · {formatEnumLabel(offer.kind)} ·{" "}
-                            {formatCopperAsGold(offer.priceGold)}
+                            {formatCopperAsGold(currentPrice)} (base{" "}
+                            {formatCopperAsGold(offer.basePriceGold || offer.priceGold)})
                           </div>
                         </div>
-                        <span className="tag">Stock {offer.quantity}</span>
+                        <span className="tag">Stock {offer.quantity}/{offer.weeklyStock}</span>
                       </div>
                       <p>{offer.itemDescription}</p>
+                      <p className="muted">
+                        Fit {fit.tier.toLowerCase()} ({fit.score}/100) · Negotiation DC{" "}
+                        {negotiationDc}
+                        {offer.negotiationNote ? ` · ${offer.negotiationNote}` : ""}
+                      </p>
                       {offer.notes ? <p className="muted">{offer.notes}</p> : null}
+                      <form action={negotiateStorefrontOfferAction} className="stack-form">
+                        <input type="hidden" name="offerId" value={offer.id} />
+                        <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                        <div className="subgrid">
+                          <label className="field-label">
+                            Negotiator
+                            <input name="negotiatorName" placeholder="Character name" required />
+                          </label>
+                          <label className="field-label">
+                            Roll total
+                            <input max="40" min="1" name="rollTotal" type="number" required />
+                          </label>
+                        </div>
+                        <label className="field-label">
+                          Negotiation note
+                          <textarea name="note" placeholder="Persuasion or intimidation context." />
+                        </label>
+                        <div className="button-row">
+                          <button
+                            className="button-secondary"
+                            disabled={!storefront.allowsPersuasion && !storefront.allowsIntimidation}
+                            type="submit"
+                          >
+                            Apply one-purchase negotiation
+                          </button>
+                        </div>
+                      </form>
                       <form action={recordStorefrontSaleAction} className="stack-form">
                         <input type="hidden" name="offerId" value={offer.id} />
                         <input type="hidden" name="campaignSlug" value={campaign.slug} />
@@ -2266,8 +2432,63 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                         </div>
                       </form>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
+
+                {storefront.sellRequests.length > 0 ? (
+                  <div className="list-card">
+                    {storefront.sellRequests.map((request) => (
+                      <div className="list-item" key={request.id}>
+                        <div className="card-header">
+                          <div>
+                            <strong>
+                              {request.character.name} selling {request.quantity}x{" "}
+                              {request.lootItem.name}
+                            </strong>
+                            <p className="muted">
+                              {formatEnumLabel(request.status)} · Fit {request.fitScore}/100 · Suggested{" "}
+                              {formatCopperAsGold(request.suggestedPriceGold)} · From{" "}
+                              {formatHoldingScopeLabel(request.sellScope)}
+                            </p>
+                          </div>
+                        </div>
+                        {request.note ? <p>{request.note}</p> : null}
+                        {request.status === "PENDING" ? (
+                          <form action={resolveStorefrontSellRequestAction} className="stack-form">
+                            <input type="hidden" name="requestId" value={request.id} />
+                            <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                            <div className="subgrid">
+                              <label className="field-label">
+                                Payout
+                                <input
+                                  defaultValue={request.suggestedPriceGold}
+                                  min="0"
+                                  name="payoutGold"
+                                  type="number"
+                                />
+                              </label>
+                              <label className="field-label">
+                                DM note
+                                <input name="dmNote" placeholder="Approval or rejection note" />
+                              </label>
+                            </div>
+                            <div className="button-row">
+                              <button className="button-secondary" name="decision" type="submit" value="accept">
+                                Accept sale
+                              </button>
+                              <button className="button-secondary" name="decision" type="submit" value="reject">
+                                Reject
+                              </button>
+                            </div>
+                          </form>
+                        ) : request.dmNote ? (
+                          <p className="muted">{request.dmNote}</p>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
 
                 <form action={createStorefrontOfferAction} className="stack-form">
                   <input type="hidden" name="storefrontId" value={storefront.id} />
@@ -2279,7 +2500,7 @@ export default async function DmPage({ searchParams }: DmPageProps) {
                       <input name="itemName" placeholder="Potion of Clean Passage" required />
                     </label>
                     <label className="field-label">
-                      Price gold
+                      Price copper
                       <input defaultValue="25" min="0" name="priceGold" type="number" />
                     </label>
                     <label className="field-label">
@@ -2383,56 +2604,70 @@ export default async function DmPage({ searchParams }: DmPageProps) {
           </form>
 
           <div className="card-stack">
-            {mailThreads.map((thread) => (
-              <div className="item-card" key={thread.id}>
-                <div className="card-header">
-                  <div>
-                    <div className="value-line">{thread.subject}</div>
-                    <div className="muted">
-                      {thread.senderName} to {thread.recipientName}
-                    </div>
-                  </div>
-                  <span className="tag">{formatEnumLabel(thread.status)}</span>
-                </div>
-                {thread.notes ? <p className="muted">{thread.notes}</p> : null}
-                <div className="list-card">
-                  {thread.messages.map((message) => (
-                    <div className="list-item" key={message.id}>
-                      <div className="card-header">
-                        <strong>
-                          {message.fromName} to {message.toName}
-                        </strong>
-                        <span className="tag">{message.isFromDm ? "DM" : "Player"}</span>
+            {orderedMailThreads.map((thread) => {
+              const replySummary = getMailThreadReplySummary(thread);
+
+              return (
+                <div className="item-card" id={`mail-thread-${thread.id}`} key={thread.id}>
+                  <div className="card-header">
+                    <div>
+                      <div className="value-line">{thread.subject}</div>
+                      <div className="muted">
+                        {thread.senderName} to {thread.recipientName}
                       </div>
-                      <p>{message.body}</p>
                     </div>
-                  ))}
+                    <div className="tag-row">
+                      {isFocusedMailThread(thread.id) ? <span className="tag">Focused</span> : null}
+                      {replySummary.hasPlayerReplies ? (
+                        <span className="tag">Player replied</span>
+                      ) : null}
+                      <span className="tag">
+                        {replySummary.messageCount}{" "}
+                        {replySummary.messageCount === 1 ? "message" : "messages"}
+                      </span>
+                      <span className="tag">{formatEnumLabel(thread.status)}</span>
+                    </div>
+                  </div>
+                  {thread.notes ? <p className="muted">{thread.notes}</p> : null}
+                  <div className="list-card">
+                    {thread.messages.map((message) => (
+                      <div className="list-item" key={message.id}>
+                        <div className="card-header">
+                          <strong>
+                            {message.fromName} to {message.toName}
+                          </strong>
+                          <span className="tag">{message.isFromDm ? "DM" : "Player"}</span>
+                        </div>
+                        <p>{message.body}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <form action={replyMailThreadAction} className="stack-form">
+                    <input type="hidden" name="threadId" value={thread.id} />
+                    <input type="hidden" name="campaignSlug" value={campaign.slug} />
+                    <div className="subgrid">
+                      <label className="field-label">
+                        From
+                        <input defaultValue="DM" name="fromName" required />
+                      </label>
+                      <label className="field-label">
+                        To
+                        <input defaultValue={thread.recipientName} name="toName" required />
+                      </label>
+                    </div>
+                    <label className="field-label">
+                      Reply
+                      <textarea name="body" placeholder="The next message in the thread." required />
+                    </label>
+                    <div className="button-row">
+                      <button className="button-secondary" type="submit">
+                        Add reply
+                      </button>
+                    </div>
+                  </form>
                 </div>
-                <form action={replyMailThreadAction} className="stack-form">
-                  <input type="hidden" name="threadId" value={thread.id} />
-                  <input type="hidden" name="campaignSlug" value={campaign.slug} />
-                  <div className="subgrid">
-                    <label className="field-label">
-                      From
-                      <input defaultValue="DM" name="fromName" required />
-                    </label>
-                    <label className="field-label">
-                      To
-                      <input defaultValue={thread.recipientName} name="toName" required />
-                    </label>
-                  </div>
-                  <label className="field-label">
-                    Reply
-                    <textarea name="body" placeholder="The next message in the thread." required />
-                  </label>
-                  <div className="button-row">
-                    <button className="button-secondary" type="submit">
-                      Add reply
-                    </button>
-                  </div>
-                </form>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </article>
 

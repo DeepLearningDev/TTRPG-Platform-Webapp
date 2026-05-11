@@ -1,5 +1,6 @@
 import {
   CampaignStatus,
+  CampaignEconomyPriceTier,
   CompendiumSourceProvider,
   EncounterDifficulty,
   HoldingScope,
@@ -9,6 +10,7 @@ import {
   MonsterSourceType,
   NpcType,
   PrismaClient,
+  StorefrontShopType,
 } from "@prisma/client";
 import { hashPin } from "../src/lib/pin";
 
@@ -21,6 +23,7 @@ async function main() {
   await prisma.craftingRecipe.deleteMany();
   await prisma.mailMessage.deleteMany();
   await prisma.mailThread.deleteMany();
+  await prisma.storefrontSellRequest.deleteMany();
   await prisma.storefrontOffer.deleteMany();
   await prisma.storefront.deleteMany();
   await prisma.quest.deleteMany();
@@ -38,6 +41,7 @@ async function main() {
       slug: "ashes-of-highcrest",
       name: "Ashes of Highcrest",
       status: CampaignStatus.ACTIVE,
+      economyPriceTier: CampaignEconomyPriceTier.NORMAL,
       setting: "Storm-battered city intrigue and catacomb delves",
       summary:
         "A recovering port city where noble factions, grave cults, and old flood tunnels keep colliding.",
@@ -50,6 +54,7 @@ async function main() {
       slug: "sunken-crown",
       name: "The Sunken Crown",
       status: CampaignStatus.ACTIVE,
+      economyPriceTier: CampaignEconomyPriceTier.EXPENSIVE,
       setting: "Jungle ruins, flooded vaults, and expedition politics",
       summary:
         "An expedition race into drowned ruins where relics, beasts, and rival crews all want the same map.",
@@ -443,6 +448,11 @@ async function main() {
       name: "Lantern Ward Trading Post",
       keeperName: "Rook Penn",
       description: "A hard-edged vault shop that keeps relics under glass and prices under watch.",
+      shopType: StorefrontShopType.ARCANE_SHOP,
+      cashOnHand: 2200,
+      restockSeed: "ashes-of-highcrest:lantern-ward",
+      allowsPersuasion: true,
+      allowsIntimidation: true,
       notes: "Offers a small rotating stock for favor, coin, or story leverage.",
     },
   });
@@ -457,7 +467,10 @@ async function main() {
         rarity: wardKey.rarity,
         kind: wardKey.kind,
         priceGold: 110,
+        basePriceGold: 110,
+        currentPriceGold: 110,
         quantity: 1,
+        weeklyStock: 1,
         notes: "Clears sealed doors and old vault locks.",
       },
       {
@@ -468,7 +481,10 @@ async function main() {
         rarity: emberBand.rarity,
         kind: emberBand.kind,
         priceGold: 260,
+        basePriceGold: 260,
+        currentPriceGold: 260,
         quantity: 1,
+        weeklyStock: 1,
         notes: "Usually reserved for allies with grave-cult trouble.",
       },
     ],

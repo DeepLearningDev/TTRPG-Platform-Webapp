@@ -2,8 +2,8 @@
 
 import { randomInt } from "node:crypto";
 import {
+  CampaignEconomyPriceTier,
   CampaignStatus,
-  CraftingResolutionOutcome,
   EncounterDifficulty,
   HoldingScope,
   LedgerEntryType,
@@ -19,6 +19,8 @@ import {
   NpcType,
   Prisma,
   QuestStatus,
+  StorefrontSellRequestStatus,
+  StorefrontShopType,
   StorefrontStatus,
 } from "@prisma/client";
 import { revalidatePath } from "next/cache";
@@ -26,10 +28,9 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { importCompendiumBatch, clampImportBudget } from "@/lib/compendium-source";
 import {
-  buildCraftingConsumptionPlan,
   deriveCraftingHoldings,
   parseCraftingMaterials,
-  resolveCraftingOutcome,
+  planCraftingCompletion,
 } from "@/lib/crafting-resolution";
 import { parseTagInput } from "@/lib/campaign-vault";
 import {
@@ -47,6 +48,7 @@ import {
   buildLootPoolDraft,
   runPartyLootRoll,
 } from "@/lib/loot-generation";
+import { planLootPoolRollSettlement } from "@/lib/loot-resolution";
 import { formatHoldingScopeLabel } from "@/lib/format";
 import {
   parseLootReservedCharacterName,
@@ -54,6 +56,14 @@ import {
 } from "@/lib/loot-progress";
 import { hashPin } from "@/lib/pin";
 import { prisma } from "@/lib/prisma";
+import {
+  calculateStorefrontCurrentPrice,
+  generateShopName,
+  getDefaultStorefrontCatalog,
+  planOnePurchaseDiscount,
+  planStorefrontWeeklyRestock,
+  scoreStorefrontItemFit,
+} from "@/lib/storefront-economy";
 
 const npcSchema = z.object({
   campaignId: z.string().min(1),
@@ -73,6 +83,7 @@ type CampaignMutationContext = {
   slug: string;
   status: CampaignStatus;
   name: string;
+  economyPriceTier: CampaignEconomyPriceTier;
 };
 
 function buildLootDeliveryMetadata(input: {
@@ -80,6 +91,22 @@ function buildLootDeliveryMetadata(input: {
   baseDetail: string;
 }) {
   return `${input.baseDetail} Sent to ${formatHoldingScopeLabel(input.scope)}.`;
+}
+
+function getEffectiveStorefrontOfferPrice(input: {
+  priceGold: number;
+  currentPriceGold?: number | null;
+  negotiatedPriceGold?: number | null;
+}) {
+  if (input.negotiatedPriceGold !== null && input.negotiatedPriceGold !== undefined) {
+    return input.negotiatedPriceGold;
+  }
+
+  if (input.currentPriceGold && input.currentPriceGold > 0) {
+    return input.currentPriceGold;
+  }
+
+  return input.priceGold;
 }
 
 async function findReservationCharacterByName(
@@ -137,9 +164,20 @@ function redirectToCampaign(slug: string): never {
   redirect(`/dm?campaign=${slug}`);
 }
 
-function redirectToCampaignWithMessage(slug: string, key: string, value: string): never {
+function redirectToCampaignWithMailThreadMessage(
+  slug: string,
+  key: string,
+  value: string,
+  threadId: string,
+): never {
+  const params = new URLSearchParams({
+    campaign: slug,
+    [key]: value,
+    mailThread: threadId,
+  });
+
   revalidatePath("/dm");
-  redirect(`/dm?campaign=${slug}&${key}=${value}`);
+  redirect(`/dm?${params.toString()}#mail-thread-${encodeURIComponent(threadId)}`);
 }
 
 function redirectToCampaignError(
@@ -195,6 +233,7 @@ async function resolveCampaignMutationContext(options: {
       slug: true,
       name: true,
       status: true,
+      economyPriceTier: true,
     },
   });
 
@@ -384,12 +423,14 @@ export async function createCampaignAction(formData: FormData) {
       name: z.string().min(3),
       setting: z.string().min(6),
       summary: z.string().min(12),
+      economyPriceTier: z.nativeEnum(CampaignEconomyPriceTier),
       sessionNight: z.string().optional(),
     }),
     {
       name: formData.get("name"),
       setting: formData.get("setting"),
       summary: formData.get("summary"),
+      economyPriceTier: formData.get("economyPriceTier"),
       sessionNight: formData.get("sessionNight") || undefined,
     },
     {
@@ -420,6 +461,7 @@ export async function createCampaignAction(formData: FormData) {
       name: payload.name.trim(),
       setting: payload.setting.trim(),
       summary: payload.summary.trim(),
+      economyPriceTier: payload.economyPriceTier,
       sessionNight: payload.sessionNight?.trim() || null,
       status: CampaignStatus.ACTIVE,
     },
@@ -449,6 +491,73 @@ export async function archiveCampaignAction(formData: FormData) {
 
   revalidatePath("/dm");
   redirect("/dm");
+}
+
+export async function updateCampaignEconomyPriceTierAction(formData: FormData) {
+  await requireDmSession();
+
+  const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
+  const payload = parseMutationPayload(
+    z.object({
+      economyPriceTier: z.nativeEnum(CampaignEconomyPriceTier),
+    }),
+    {
+      economyPriceTier: formData.get("economyPriceTier"),
+    },
+    {
+      campaignSlug,
+      error: "invalid-campaign-state",
+    },
+  );
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
+
+  const offers = await prisma.storefrontOffer.findMany({
+    where: {
+      storefront: {
+        campaignId: campaign.id,
+      },
+    },
+  });
+
+  await prisma.$transaction(async (tx) => {
+    await tx.campaign.update({
+      where: {
+        id: campaign.id,
+      },
+      data: {
+        economyPriceTier: payload.economyPriceTier,
+      },
+    });
+
+    for (const offer of offers) {
+      const basePriceGold = offer.basePriceGold > 0 ? offer.basePriceGold : offer.priceGold;
+      const price = calculateStorefrontCurrentPrice({
+        basePriceCopper: basePriceGold,
+        purchaseCount: offer.weeklyPurchasedCount,
+        soldToStoreCount: offer.soldToStoreCount,
+        stock: offer.quantity,
+        priceTier: payload.economyPriceTier,
+      });
+
+      await tx.storefrontOffer.update({
+        where: {
+          id: offer.id,
+        },
+        data: {
+          basePriceGold,
+          currentPriceGold: price.currentPriceCopper,
+          priceGold: price.currentPriceCopper,
+          negotiatedPriceGold: null,
+          negotiatedByName: null,
+          negotiationNote: null,
+        },
+      });
+    }
+  });
+
+  redirectToCampaign(campaign.slug);
 }
 
 const pinSchema = z.string().regex(/^\d{4,8}$/);
@@ -1337,7 +1446,23 @@ export async function rollLootPoolItemAction(formData: FormData) {
     redirectToCampaignError(campaign.slug, "invalid-loot-pool-state");
   }
 
-  const rollResult = runPartyLootRoll(characters, () => randomInt(1, 21));
+  const existingRollEntries = await prisma.lootPoolRollEntry.findMany({
+    where: {
+      lootPoolItemId: lootPoolItem.id,
+    },
+    select: {
+      id: true,
+      characterId: true,
+      rollTotal: true,
+      status: true,
+    },
+  });
+  const plannedSettlement = planLootPoolRollSettlement({
+    characters,
+    rollEntries: existingRollEntries,
+  });
+  const rollResult =
+    plannedSettlement ?? runPartyLootRoll(characters, () => randomInt(1, 21));
   const note =
     payload.note?.trim() || `${lootPoolItem.lootPool.title}: ${rollResult.summary}`;
   const resolvedAt = new Date();
@@ -1376,23 +1501,36 @@ export async function rollLootPoolItemAction(formData: FormData) {
       return false;
     }
 
-    await tx.lootPoolRollEntry.deleteMany({
-      where: {
-        lootPoolItemId: lootPoolItem.id,
-      },
-    });
+    if (plannedSettlement) {
+      for (const entry of plannedSettlement.entries) {
+        await tx.lootPoolRollEntry.update({
+          where: {
+            id: entry.id,
+          },
+          data: {
+            status: entry.status,
+          },
+        });
+      }
+    } else {
+      await tx.lootPoolRollEntry.deleteMany({
+        where: {
+          lootPoolItemId: lootPoolItem.id,
+        },
+      });
 
-    await tx.lootPoolRollEntry.createMany({
-      data: rollResult.rolls.map((entry) => ({
-        lootPoolItemId: lootPoolItem.id,
-        characterId: entry.id,
-        rollTotal: entry.roll,
-        status:
-          entry.id === rollResult.winner.id
-            ? LootPoolRollStatus.WON
-            : LootPoolRollStatus.LOST,
-      })),
-    });
+      await tx.lootPoolRollEntry.createMany({
+        data: rollResult.rolls.map((entry) => ({
+          lootPoolItemId: lootPoolItem.id,
+          characterId: entry.id,
+          rollTotal: entry.roll,
+          status:
+            entry.id === rollResult.winner.id
+              ? LootPoolRollStatus.WON
+              : LootPoolRollStatus.LOST,
+        })),
+      });
+    }
 
     await tx.inventoryLedgerEntry.create({
       data: {
@@ -1978,23 +2116,32 @@ export async function createStorefrontAction(formData: FormData) {
   });
   const payload = parseMutationPayload(
     z.object({
-      name: z.string().min(3),
+      name: z.string().optional(),
       description: z.string().min(8),
+      shopType: z.nativeEnum(StorefrontShopType),
+      cashOnHand: z.coerce.number().int().min(0).max(1_000_000),
     }),
     {
       name: formData.get("name"),
       description: formData.get("description"),
+      shopType: formData.get("shopType"),
+      cashOnHand: formData.get("cashOnHand"),
     },
     {
       campaignSlug: rawCampaignSlug,
       error: "invalid-storefront-state",
     },
   );
+  const requestedName = payload.name?.trim();
+  const storefrontName =
+    requestedName && requestedName.length >= 3
+      ? requestedName
+      : generateShopName(payload.shopType, `${campaign.id}:${Date.now()}`);
 
   const duplicateStorefront = await prisma.storefront.findFirst({
     where: {
       campaignId: campaign.id,
-      name: payload.name.trim(),
+      name: storefrontName,
     },
     select: {
       id: true,
@@ -2008,9 +2155,14 @@ export async function createStorefrontAction(formData: FormData) {
   await prisma.storefront.create({
     data: {
       campaignId: campaign.id,
-      name: payload.name.trim(),
+      name: storefrontName,
       keeperName: readOptionalTextField(formData, "keeperName"),
       description: payload.description.trim(),
+      shopType: payload.shopType,
+      cashOnHand: payload.cashOnHand,
+      restockSeed: `${campaign.id}:${storefrontName}`,
+      allowsPersuasion: readBooleanField(formData, "allowsPersuasion"),
+      allowsIntimidation: readBooleanField(formData, "allowsIntimidation"),
       notes: readOptionalTextField(formData, "notes"),
     },
   });
@@ -2032,11 +2184,15 @@ export async function updateStorefrontAction(formData: FormData) {
       name: z.string().min(1),
       description: z.string().min(1),
       status: z.nativeEnum(StorefrontStatus),
+      shopType: z.nativeEnum(StorefrontShopType),
+      cashOnHand: z.coerce.number().int().min(0).max(1_000_000),
     }),
     {
       name: formData.get("name"),
       description: formData.get("description"),
       status: formData.get("status"),
+      shopType: formData.get("shopType"),
+      cashOnHand: formData.get("cashOnHand"),
     },
     {
       campaignSlug: rawCampaignSlug,
@@ -2084,9 +2240,155 @@ export async function updateStorefrontAction(formData: FormData) {
       name: payload.name.trim(),
       keeperName: readOptionalTextField(formData, "keeperName"),
       description: payload.description.trim(),
+      shopType: payload.shopType,
+      cashOnHand: payload.cashOnHand,
+      allowsPersuasion: readBooleanField(formData, "allowsPersuasion"),
+      allowsIntimidation: readBooleanField(formData, "allowsIntimidation"),
       notes: readOptionalTextField(formData, "notes"),
       status: payload.status,
     },
+  });
+
+  redirectToCampaign(campaign.slug);
+}
+
+export async function advanceStorefrontMarketWeekAction(formData: FormData) {
+  await requireDmSession();
+
+  const storefrontId = z.string().min(1).parse(formData.get("storefrontId"));
+  const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
+
+  const storefront = await prisma.storefront.findFirst({
+    where: {
+      id: storefrontId,
+      campaignId: campaign.id,
+    },
+    include: {
+      offers: true,
+      campaign: {
+        include: {
+          lootItems: true,
+        },
+      },
+    },
+  });
+
+  if (!storefront) {
+    redirectToCampaignError(campaign.slug, "invalid-storefront-state");
+  }
+
+  const nextWeek = storefront.marketWeek + 1;
+  await prisma.$transaction(async (tx) => {
+    await tx.storefront.update({
+      where: {
+        id: storefront.id,
+      },
+      data: {
+        marketWeek: nextWeek,
+        lastRestockedAt: new Date(),
+        restockSeed: `${storefront.id}:${nextWeek}`,
+      },
+    });
+
+    for (const offer of storefront.offers) {
+      const basePriceGold = offer.basePriceGold > 0 ? offer.basePriceGold : offer.priceGold;
+      const weeklyStock = Math.max(1, offer.weeklyStock || offer.quantity || 1);
+      const price = calculateStorefrontCurrentPrice({
+        basePriceCopper: basePriceGold,
+        purchaseCount: offer.weeklyPurchasedCount,
+        soldToStoreCount: offer.soldToStoreCount,
+        stock: weeklyStock,
+        priceTier: campaign.economyPriceTier,
+      });
+
+      await tx.storefrontOffer.update({
+        where: {
+          id: offer.id,
+        },
+        data: {
+          quantity: weeklyStock,
+          weeklyStock,
+          basePriceGold,
+          currentPriceGold: price.currentPriceCopper,
+          priceGold: price.currentPriceCopper,
+          weeklyPurchasedCount: 0,
+          negotiatedPriceGold: null,
+          negotiatedByName: null,
+          negotiationNote: null,
+        },
+      });
+    }
+
+    const existingLootItemIds = new Set(
+      storefront.offers.flatMap((offer) => (offer.lootItemId ? [offer.lootItemId] : [])),
+    );
+    const defaultCatalogItems = await Promise.all(
+      getDefaultStorefrontCatalog(storefront.shopType).map((item) =>
+        tx.lootItem.upsert({
+          where: {
+            campaignId_sourceKey: {
+              campaignId: campaign.id,
+              sourceKey: item.sourceKey,
+            },
+          },
+          update: {
+            goldValue: item.goldValue,
+          },
+          create: {
+            campaignId: campaign.id,
+            sourceKey: item.sourceKey,
+            name: item.name,
+            rarity: item.rarity as LootRarity,
+            kind: item.kind as LootKind,
+            description: item.description,
+            sourceTag: item.sourceTag,
+            goldValue: item.goldValue,
+          },
+        }),
+      ),
+    );
+    const restockCandidates = [
+      ...storefront.campaign.lootItems,
+      ...defaultCatalogItems,
+    ].filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index);
+    const restockPlan = planStorefrontWeeklyRestock({
+      shopType: storefront.shopType,
+      items: restockCandidates.filter((item) => !existingLootItemIds.has(item.id)),
+      seed: storefront.restockSeed ?? storefront.id,
+      marketWeek: nextWeek,
+      priceTier: campaign.economyPriceTier,
+      maxItems: 4,
+    });
+
+    for (const itemPlan of restockPlan) {
+      const item = restockCandidates.find(
+        (candidate) => candidate.id === itemPlan.lootItemId,
+      );
+
+      if (!item) {
+        continue;
+      }
+
+      await tx.storefrontOffer.create({
+        data: {
+          storefrontId: storefront.id,
+          lootItemId: item.id,
+          itemName: item.name,
+          itemDescription: item.description,
+          rarity: item.rarity,
+          kind: item.kind,
+          priceGold: itemPlan.currentPriceCopper,
+          basePriceGold: itemPlan.basePriceCopper,
+          currentPriceGold: itemPlan.currentPriceCopper,
+          quantity: itemPlan.quantity,
+          weeklyStock: itemPlan.quantity,
+          notes: `Generated week ${nextWeek} stock; fit ${itemPlan.fitScore}/100.`,
+        },
+      });
+    }
   });
 
   redirectToCampaign(campaign.slug);
@@ -2171,6 +2473,14 @@ export async function createStorefrontOfferAction(formData: FormData) {
     }
   }
 
+  const price = calculateStorefrontCurrentPrice({
+    basePriceCopper: payload.priceGold,
+    purchaseCount: 0,
+    soldToStoreCount: 0,
+    stock: payload.quantity,
+    priceTier: campaign.economyPriceTier,
+  });
+
   await prisma.storefrontOffer.create({
     data: {
       storefrontId,
@@ -2179,9 +2489,90 @@ export async function createStorefrontOfferAction(formData: FormData) {
       itemDescription: payload.itemDescription.trim(),
       rarity: payload.rarity,
       kind: payload.kind,
-      priceGold: payload.priceGold,
+      priceGold: price.currentPriceCopper,
+      basePriceGold: payload.priceGold,
+      currentPriceGold: price.currentPriceCopper,
       quantity: payload.quantity,
+      weeklyStock: payload.quantity,
       notes: readOptionalTextField(formData, "notes"),
+    },
+  });
+
+  redirectToCampaign(campaign.slug);
+}
+
+export async function negotiateStorefrontOfferAction(formData: FormData) {
+  await requireDmSession();
+
+  const offerId = z.string().min(1).parse(formData.get("offerId"));
+  const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      rollTotal: z.coerce.number().int().min(1).max(40),
+      negotiatorName: z.string().trim().min(2).max(80),
+      note: z.string().trim().max(280).optional(),
+    }),
+    {
+      rollTotal: formData.get("rollTotal"),
+      negotiatorName: formData.get("negotiatorName"),
+      note: formData.get("note") ?? undefined,
+    },
+    {
+      campaignSlug,
+      error: "invalid-storefront-state",
+    },
+  );
+
+  const offer = await prisma.storefrontOffer.findFirst({
+    where: {
+      id: offerId,
+      storefront: {
+        campaignId: campaign.id,
+      },
+    },
+    include: {
+      storefront: true,
+      lootItem: true,
+    },
+  });
+
+  if (!offer || (!offer.storefront.allowsPersuasion && !offer.storefront.allowsIntimidation)) {
+    redirectToCampaignError(campaign.slug, "invalid-storefront-state");
+  }
+
+  const fit = scoreStorefrontItemFit(offer.storefront.shopType, {
+    kind: offer.kind,
+    rarity: offer.rarity,
+    name: offer.itemName,
+    description: offer.itemDescription,
+    sourceTag: offer.lootItem?.sourceTag,
+  });
+  const discountPlan = planOnePurchaseDiscount({
+    currentPriceCopper: getEffectiveStorefrontOfferPrice(offer),
+    fitScore: fit.score,
+    rarity: offer.rarity,
+    negotiationTotal: payload.rollTotal,
+  });
+
+  await prisma.storefrontOffer.update({
+    where: {
+      id: offer.id,
+    },
+    data: {
+      negotiatedPriceGold: discountPlan.succeeded
+        ? discountPlan.discountedPriceCopper
+        : null,
+      negotiatedByName: payload.negotiatorName,
+      negotiationNote:
+        payload.note ||
+        `Roll ${payload.rollTotal} vs DC ${discountPlan.negotiationDc}; ${
+          discountPlan.succeeded
+            ? `${discountPlan.discountPercent}% one-purchase discount`
+            : "no discount"
+        }.`,
     },
   });
 
@@ -2273,28 +2664,262 @@ export async function recordStorefrontSaleAction(formData: FormData) {
     });
   }
 
-  await prisma.storefrontOffer.updateMany({
-    where: {
-      id: offerId,
-      storefrontId: offer.storefrontId,
+  const unitPriceGold = getEffectiveStorefrontOfferPrice(offer);
+  const totalPriceGold = unitPriceGold * payload.quantity;
+
+  await prisma.$transaction([
+    prisma.storefrontOffer.update({
+      where: {
+        id: offer.id,
+      },
+      data: {
+        quantity: {
+          decrement: payload.quantity,
+        },
+        weeklyPurchasedCount: {
+          increment: payload.quantity,
+        },
+        lifetimePurchasedCount: {
+          increment: payload.quantity,
+        },
+        negotiatedPriceGold: null,
+        negotiatedByName: null,
+        negotiationNote: null,
+      },
+    }),
+    prisma.storefront.update({
+      where: {
+        id: offer.storefrontId,
+      },
+      data: {
+        cashOnHand: {
+          increment: totalPriceGold,
+        },
+      },
+    }),
+    prisma.inventoryLedgerEntry.create({
+      data: {
+        campaignId: campaign.id,
+        characterId: payload.characterId,
+        lootItemId,
+        scope: payload.scope,
+        entryType: LedgerEntryType.PURCHASE,
+        quantity: payload.quantity,
+        goldDelta: -totalPriceGold,
+        note: payload.note.trim(),
+      },
+    }),
+  ]);
+
+  redirectToCampaign(campaign.slug);
+}
+
+export async function resolveStorefrontSellRequestAction(formData: FormData) {
+  await requireDmSession();
+
+  const requestId = z.string().min(1).parse(formData.get("requestId"));
+  const campaignSlug = z.string().min(1).parse(formData.get("campaignSlug"));
+  const campaign = await resolveCampaignMutationContext({
+    campaignSlug,
+  });
+  const payload = parseMutationPayload(
+    z.object({
+      decision: z.enum(["accept", "reject"]),
+      payoutGold: z.coerce.number().int().min(0).max(1_000_000),
+    }),
+    {
+      decision: formData.get("decision"),
+      payoutGold: formData.get("payoutGold"),
     },
-    data: {
-      quantity: offer.quantity - payload.quantity,
+    {
+      campaignSlug,
+      error: "invalid-storefront-state",
+    },
+  );
+
+  const request = await prisma.storefrontSellRequest.findFirst({
+    where: {
+      id: requestId,
+      campaignId: campaign.id,
+      status: StorefrontSellRequestStatus.PENDING,
+    },
+    include: {
+      storefront: true,
+      lootItem: true,
     },
   });
 
-  await prisma.inventoryLedgerEntry.create({
-    data: {
-      campaignId: campaign.id,
-      characterId: payload.characterId,
-      lootItemId,
-      scope: payload.scope,
-      entryType: LedgerEntryType.PURCHASE,
-      quantity: payload.quantity,
-      goldDelta: -(offer.priceGold * payload.quantity),
-      note: payload.note.trim(),
-    },
+  if (!request) {
+    redirectToCampaignError(campaign.slug, "invalid-storefront-state");
+  }
+
+  if (payload.decision === "reject") {
+    await prisma.storefrontSellRequest.update({
+      where: {
+        id: request.id,
+      },
+      data: {
+        status: StorefrontSellRequestStatus.REJECTED,
+        dmNote: readOptionalTextField(formData, "dmNote"),
+        resolvedAt: new Date(),
+      },
+    });
+
+    redirectToCampaign(campaign.slug);
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const heldQuantity = await tx.inventoryLedgerEntry.aggregate({
+      where: {
+        campaignId: campaign.id,
+        characterId: request.characterId,
+        lootItemId: request.lootItemId,
+        scope: request.sellScope,
+      },
+      _sum: {
+        quantity: true,
+      },
+    });
+
+    if ((heldQuantity._sum.quantity ?? 0) < request.quantity) {
+      return {
+        ok: false as const,
+      };
+    }
+
+    const cashUpdate = await tx.storefront.updateMany({
+      where: {
+        id: request.storefrontId,
+        cashOnHand: {
+          gte: payload.payoutGold,
+        },
+      },
+      data: {
+        cashOnHand: {
+          decrement: payload.payoutGold,
+        },
+      },
+    });
+
+    if (cashUpdate.count !== 1) {
+      return {
+        ok: false as const,
+      };
+    }
+
+    await tx.storefrontSellRequest.update({
+      where: {
+        id: request.id,
+      },
+      data: {
+        status: StorefrontSellRequestStatus.ACCEPTED,
+        suggestedPriceGold: payload.payoutGold,
+        dmNote: readOptionalTextField(formData, "dmNote"),
+        resolvedAt: new Date(),
+      },
+    });
+
+    await tx.inventoryLedgerEntry.createMany({
+      data: [
+        {
+          campaignId: campaign.id,
+          characterId: request.characterId,
+          lootItemId: request.lootItemId,
+          scope: request.sellScope,
+          entryType: LedgerEntryType.SALE,
+          quantity: -request.quantity,
+          goldDelta: 0,
+          note: `Sold ${request.quantity}x ${request.lootItem.name} to ${request.storefront.name}.`,
+        },
+        {
+          campaignId: campaign.id,
+          characterId: request.characterId,
+          lootItemId: null,
+          scope: HoldingScope.BANK,
+          entryType: LedgerEntryType.SALE,
+          quantity: 0,
+          goldDelta: payload.payoutGold,
+          note: `Payment from ${request.storefront.name} for ${request.lootItem.name}.`,
+        },
+      ],
+    });
+
+    const existingOffer = await tx.storefrontOffer.findFirst({
+      where: {
+        storefrontId: request.storefrontId,
+        lootItemId: request.lootItemId,
+      },
+    });
+
+    if (existingOffer) {
+      const nextQuantity = existingOffer.quantity + request.quantity;
+      const nextSoldToStoreCount = existingOffer.soldToStoreCount + request.quantity;
+      const price = calculateStorefrontCurrentPrice({
+        basePriceCopper: existingOffer.basePriceGold || existingOffer.priceGold,
+        purchaseCount: existingOffer.weeklyPurchasedCount,
+        soldToStoreCount: nextSoldToStoreCount,
+        stock: nextQuantity,
+        priceTier: campaign.economyPriceTier,
+      });
+
+      await tx.storefrontOffer.update({
+        where: {
+          id: existingOffer.id,
+        },
+        data: {
+          quantity: {
+            increment: request.quantity,
+          },
+          weeklyStock: {
+            increment: request.quantity,
+          },
+          soldToStoreCount: {
+            increment: request.quantity,
+          },
+          currentPriceGold: price.currentPriceCopper,
+          priceGold: price.currentPriceCopper,
+        },
+      });
+
+      return {
+        ok: true as const,
+      };
+    }
+
+    const basePriceGold = request.lootItem.goldValue ?? Math.max(payload.payoutGold * 2, 1);
+    const price = calculateStorefrontCurrentPrice({
+      basePriceCopper: basePriceGold,
+      purchaseCount: 0,
+      soldToStoreCount: request.quantity,
+      stock: request.quantity,
+      priceTier: campaign.economyPriceTier,
+    });
+    await tx.storefrontOffer.create({
+      data: {
+        storefrontId: request.storefrontId,
+        lootItemId: request.lootItemId,
+        itemName: request.lootItem.name,
+        itemDescription: request.lootItem.description,
+        rarity: request.lootItem.rarity,
+        kind: request.lootItem.kind,
+        priceGold: price.currentPriceCopper,
+        basePriceGold,
+        currentPriceGold: price.currentPriceCopper,
+        quantity: request.quantity,
+        weeklyStock: request.quantity,
+        soldToStoreCount: request.quantity,
+        notes: "Bought from a player and added to store stock.",
+      },
+    });
+
+    return {
+      ok: true as const,
+    };
   });
+
+  if (!result.ok) {
+    redirectToCampaignError(campaign.slug, "invalid-storefront-state");
+  }
 
   redirectToCampaign(campaign.slug);
 }
@@ -2417,10 +3042,15 @@ export async function nudgeStaleReservationAction(formData: FormData) {
   });
 
   if (existingThread) {
-    redirectToCampaignWithMessage(campaign.slug, "mail", "already-nudged");
+    redirectToCampaignWithMailThreadMessage(
+      campaign.slug,
+      "mail",
+      "already-nudged",
+      existingThread.id,
+    );
   }
 
-  await prisma.mailThread.create({
+  const thread = await prisma.mailThread.create({
     data: {
       campaignId: campaign.id,
       subject: `Loot follow-up: ${lootPoolItem.itemNameSnapshot}`,
@@ -2441,7 +3071,7 @@ export async function nudgeStaleReservationAction(formData: FormData) {
     },
   });
 
-  redirectToCampaignWithMessage(campaign.slug, "mail", "nudged");
+  redirectToCampaignWithMailThreadMessage(campaign.slug, "mail", "nudged", thread.id);
 }
 
 export async function replyMailThreadAction(formData: FormData) {
@@ -2691,37 +3321,31 @@ export async function completeCraftingJobAction(formData: FormData) {
   const character = job.character;
   const requirements = parseCraftingMaterials(recipe.materialsText);
   const holdings = deriveCraftingHoldings(character.ledgerEntries);
-  const materialSummary = requirements.length
-    ? buildCraftingConsumptionPlan(requirements, holdings, "full")
-    : { isMet: true, consumption: [] };
-
-  if (!materialSummary.isMet) {
-    redirectToCampaignError(campaign.slug, "insufficient-crafting-materials");
-  }
-
-  const resolution = resolveCraftingOutcome({
-    level: character.level,
-    rarity: recipe.outputRarity,
-    outputName: recipe.outputName,
-    dieRoll: randomInt(1, 21),
-  });
-  const outcomeKey = resolution.outcome.toLowerCase();
-  const consumptionPlan = buildCraftingConsumptionPlan(
+  const completionPlan = planCraftingCompletion({
+    recipe: {
+      outputName: recipe.outputName,
+      outputDescription: recipe.outputDescription,
+      outputRarity: recipe.outputRarity,
+      outputKind: recipe.outputKind,
+      goldCost: recipe.goldCost,
+    },
+    characterLevel: character.level,
     requirements,
     holdings,
-    resolution.outcome === CraftingResolutionOutcome.FAILURE ? "failure" : "full",
-  );
+    destinationScope: payload.scope,
+    dieRoll: randomInt(1, 21),
+    existingLootItemId: job.lootItemId,
+    resolvedAt: new Date(),
+  });
 
-  if (!consumptionPlan.isMet) {
+  if (!completionPlan.isMet) {
     redirectToCampaignError(campaign.slug, "insufficient-crafting-materials");
   }
-
-  const resolutionText = `Roll ${resolution.dieRoll} + ${resolution.skillBonus} = ${resolution.total} vs DC ${resolution.dc}. ${resolution.resolutionText}`;
 
   await prisma.$transaction(async (tx) => {
     let lootItemId = job.lootItemId;
 
-    for (const material of consumptionPlan.consumption) {
+    for (const material of completionPlan.consumptionEntries) {
       await tx.inventoryLedgerEntry.create({
         data: {
           campaignId: campaign.id,
@@ -2730,36 +3354,32 @@ export async function completeCraftingJobAction(formData: FormData) {
           scope: material.scope,
           entryType: LedgerEntryType.CRAFTING_INPUT,
           quantity: -material.quantity,
-          note: `Spent ${material.quantity}x ${material.name} on ${recipe.outputName} (${outcomeKey} result)`,
+          note: material.note,
         },
       });
     }
 
-    if (resolution.outcome !== CraftingResolutionOutcome.FAILURE) {
-      if (!lootItemId) {
+    if (completionPlan.outputItemIntent) {
+      if (!lootItemId && completionPlan.outputItemIntent.createLootItem) {
         const lootItem = await tx.lootItem.create({
           data: {
             campaignId: campaign.id,
-            name: recipe.outputName,
-            rarity: recipe.outputRarity,
-            kind: recipe.outputKind,
-            description: recipe.outputDescription,
-            sourceTag: "Crafted item",
+            ...completionPlan.outputItemIntent.createLootItem,
           },
         });
 
         lootItemId = lootItem.id;
       }
 
-      if (recipe.goldCost > 0) {
+      if (completionPlan.goldCostLedgerIntent) {
         await tx.inventoryLedgerEntry.create({
           data: {
             campaignId: campaign.id,
             characterId: character.id,
-            scope: HoldingScope.BANK,
+            scope: completionPlan.goldCostLedgerIntent.scope,
             entryType: LedgerEntryType.CRAFTING_INPUT,
-            goldDelta: -recipe.goldCost,
-            note: `Spent ${recipe.outputName} crafting costs (${outcomeKey} result)`,
+            goldDelta: completionPlan.goldCostLedgerIntent.goldDelta,
+            note: completionPlan.goldCostLedgerIntent.note,
           },
         });
       }
@@ -2769,13 +3389,10 @@ export async function completeCraftingJobAction(formData: FormData) {
           campaignId: campaign.id,
           characterId: character.id,
           lootItemId,
-          scope: payload.scope,
+          scope: completionPlan.outputItemIntent.ledgerEntry.scope,
           entryType: LedgerEntryType.CRAFTING_OUTPUT,
-          quantity: 1,
-          note:
-            resolution.outcome === CraftingResolutionOutcome.MIXED
-              ? `Crafted ${recipe.outputName} with a mixed result`
-              : `Crafted ${recipe.outputName}`,
+          quantity: completionPlan.outputItemIntent.ledgerEntry.quantity,
+          note: completionPlan.outputItemIntent.ledgerEntry.note,
         },
       });
     }
@@ -2786,12 +3403,7 @@ export async function completeCraftingJobAction(formData: FormData) {
       },
       data: {
         lootItemId,
-        status: CraftingJobStatus.COMPLETE,
-        resolutionOutcome: resolution.outcome,
-        resolutionText,
-        rollDie: resolution.dieRoll,
-        rollTotal: resolution.total,
-        resolvedAt: new Date(),
+        ...completionPlan.jobPatch,
       },
     });
   });

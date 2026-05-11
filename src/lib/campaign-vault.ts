@@ -102,6 +102,15 @@ const dashboardInclude = {
           updatedAt: "desc" as const,
         },
       },
+      sellRequests: {
+        include: {
+          character: true,
+          lootItem: true,
+        },
+        orderBy: {
+          createdAt: "desc" as const,
+        },
+      },
     },
     orderBy: {
       updatedAt: "desc" as const,
@@ -168,6 +177,7 @@ export async function getCampaignOptions() {
       name: true,
       setting: true,
       status: true,
+      economyPriceTier: true,
       sessionNight: true,
     },
     orderBy: {
@@ -299,8 +309,23 @@ export async function getPlayerAccountBySession(input: {
             },
             include: {
               offers: {
+                include: {
+                  lootItem: true,
+                },
                 orderBy: {
                   updatedAt: "desc",
+                },
+                take: 8,
+              },
+              sellRequests: {
+                where: {
+                  characterId: input.characterId,
+                },
+                include: {
+                  lootItem: true,
+                },
+                orderBy: {
+                  createdAt: "desc",
                 },
                 take: 8,
               },
@@ -324,6 +349,15 @@ export async function getPlayerAccountBySession(input: {
               updatedAt: "desc",
             },
             take: 10,
+          },
+          craftingRecipes: {
+            where: {
+              status: "ACTIVE",
+            },
+            orderBy: {
+              updatedAt: "desc",
+            },
+            take: 12,
           },
           craftingJobs: {
             where: {
@@ -497,6 +531,52 @@ export function parseTagInput(value: FormDataEntryValue | null) {
     .join(", ");
 }
 
+export function orderMailThreadsByFocus<T extends { id: string }>(
+  threads: T[],
+  requestedThreadId?: string,
+) {
+  if (!requestedThreadId) {
+    return {
+      focusedMailThread: undefined,
+      orderedMailThreads: threads,
+    };
+  }
+
+  const focusedMailThread = threads.find((thread) => thread.id === requestedThreadId);
+
+  if (!focusedMailThread) {
+    return {
+      focusedMailThread: undefined,
+      orderedMailThreads: threads,
+    };
+  }
+
+  return {
+    focusedMailThread,
+    orderedMailThreads: [
+      focusedMailThread,
+      ...threads.filter((thread) => thread.id !== focusedMailThread.id),
+    ],
+  };
+}
+
+export function getMailThreadReplySummary(thread: {
+  messages: Array<{
+    fromName: string;
+    body: string;
+    isFromDm: boolean;
+  }>;
+}) {
+  const lastMessage = thread.messages.at(-1);
+
+  return {
+    messageCount: thread.messages.length,
+    hasPlayerReplies: thread.messages.some((message) => !message.isFromDm),
+    lastMessageSender: lastMessage?.fromName,
+    lastMessageBody: lastMessage?.body,
+  };
+}
+
 export function isMailThreadVisibleToCharacter(
   thread: {
     recipientName: string;
@@ -519,4 +599,19 @@ export function isMailThreadVisibleToCharacter(
     sender === nameKey ||
     sender === playerKey
   );
+}
+
+export function getPlayerMailReplyRecipient(
+  thread: {
+    recipientName: string;
+    senderName: string;
+  },
+  character: {
+    name: string;
+  },
+) {
+  return normalizeParticipantName(thread.senderName) ===
+    normalizeParticipantName(character.name)
+    ? thread.recipientName
+    : thread.senderName;
 }

@@ -3,12 +3,17 @@
 import { randomInt } from "node:crypto";
 import {
   CampaignStatus,
+  CraftingJobStatus,
+  CraftingRecipeStatus,
+  HoldingScope,
+  LedgerEntryType,
   LootDistributionMode,
   LootPoolItemStatus,
   LootPoolStatus,
   MailThreadStatus,
   Prisma,
   QuestStatus,
+  StorefrontStatus,
 } from "@prisma/client";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -17,8 +22,13 @@ import {
   isLockedOut,
   normalizeCharacterNameKey,
 } from "@/lib/bank-security";
-import { isMailThreadVisibleToCharacter } from "@/lib/campaign-vault";
+import { deriveCraftingHoldings } from "@/lib/crafting-resolution";
+import {
+  getPlayerMailReplyRecipient,
+  isMailThreadVisibleToCharacter,
+} from "@/lib/campaign-vault";
 import { toggleLootClaimInterest } from "@/lib/loot-progress";
+import { planPlayerCraftingRequest } from "@/lib/player-crafting-request";
 import {
   clearPlayerSession,
   getPlayerSession,
@@ -30,6 +40,12 @@ import {
   bankLoginSchema,
   normalizeBankCharacterName,
 } from "@/lib/player-bank-login";
+import { decidePlayerQuestAcceptance } from "@/lib/player-quest-acceptance";
+import { planPlayerStorefrontPurchase } from "@/lib/player-storefront-purchase";
+import {
+  scoreStorefrontItemFit,
+  suggestPlayerSellPrice,
+} from "@/lib/storefront-economy";
 
 export async function loginBankAction(formData: FormData) {
   const parsedPayload = bankLoginSchema.safeParse({
@@ -185,12 +201,29 @@ const mailReplyPlayerMutationSchema = z.object({
   body: z.string().trim().min(4).max(800),
 });
 
+const storefrontPurchasePlayerMutationSchema = z.object({
+  offerId: z.string().min(1),
+  quantity: z.coerce.number().int().min(1).max(20),
+});
+
+const storefrontSellRequestPlayerMutationSchema = z.object({
+  storefrontId: z.string().min(1),
+  itemRef: z.string().min(3),
+  quantity: z.coerce.number().int().min(1).max(20),
+  note: z.string().trim().max(500).optional(),
+});
+
+const craftingRequestPlayerMutationSchema = z.object({
+  recipeId: z.string().min(1),
+  notes: z.string().trim().max(500).optional(),
+});
+
 function redirectToPlayerAccountError(code: string): never {
   redirect(`/bank/account?error=${code}`);
 }
 
 function redirectToPlayerAccountResult(
-  key: "loot" | "quest" | "mail",
+  key: "loot" | "quest" | "mail" | "storefront" | "crafting",
   code: string,
 ): never {
   redirect(`/bank/account?${key}=${code}`);
@@ -425,10 +458,6 @@ export async function withdrawLootClaimInterestAction(formData: FormData) {
   });
 }
 
-function appendPlayerQuestNote(existing: string | null, note: string) {
-  return existing ? `${existing}\n${note}` : note;
-}
-
 export async function acceptQuestAction(formData: FormData) {
   const parsedPayload = questPlayerMutationSchema.safeParse({
     questId: formData.get("questId"),
@@ -458,34 +487,28 @@ export async function acceptQuestAction(formData: FormData) {
     redirectToPlayerAccountError("invalid-player-quest-state");
   }
 
-  const isOpenToParty = !quest.assigneeCharacterId;
-  const isAssignedToPlayer = quest.assigneeCharacterId === character.id;
+  const decision = decidePlayerQuestAcceptance({
+    character,
+    quest,
+    acceptedAt: new Date(),
+  });
 
-  if (!isOpenToParty && !isAssignedToPlayer) {
+  if (!decision.ok) {
     redirectToPlayerAccountError("invalid-player-quest-state");
   }
-
-  const dateLabel = new Date().toISOString().slice(0, 10);
-  const isAcknowledgement = isAssignedToPlayer;
-  const playerNote = isAcknowledgement
-    ? `${dateLabel}: ${character.name} acknowledged this quest from the player hub.`
-    : `${dateLabel}: ${character.name} accepted this quest from the player hub.`;
 
   await prisma.quest.update({
     where: {
       id: quest.id,
     },
     data: {
-      assigneeCharacterId: isOpenToParty ? character.id : quest.assigneeCharacterId,
+      assigneeCharacterId: decision.assigneeCharacterId,
       status: QuestStatus.ACTIVE,
-      notes: appendPlayerQuestNote(quest.notes, playerNote),
+      notes: decision.notes,
     },
   });
 
-  redirectToPlayerAccountResult(
-    "quest",
-    isAcknowledgement ? "acknowledged" : "accepted",
-  );
+  redirectToPlayerAccountResult("quest", decision.resultCode);
 }
 
 export async function replyToMailThreadAction(formData: FormData) {
@@ -517,10 +540,7 @@ export async function replyToMailThreadAction(formData: FormData) {
     redirectToPlayerAccountError("invalid-player-mail-state");
   }
 
-  const toName =
-    thread.senderName.toLowerCase() === character.name.toLowerCase()
-      ? thread.recipientName
-      : thread.senderName;
+  const toName = getPlayerMailReplyRecipient(thread, character);
 
   await prisma.mailThread.update({
     where: {
@@ -540,4 +560,345 @@ export async function replyToMailThreadAction(formData: FormData) {
   });
 
   redirectToPlayerAccountResult("mail", "sent");
+}
+
+export async function buyStorefrontOfferAction(formData: FormData) {
+  const parsedPayload = storefrontPurchasePlayerMutationSchema.safeParse({
+    offerId: formData.get("offerId"),
+    quantity: formData.get("quantity"),
+  });
+  const payload = parsedPayload.success ? parsedPayload.data : null;
+
+  if (!payload) {
+    redirectToPlayerAccountError("invalid-player-storefront-state");
+  }
+
+  const character = await requirePlayerMutationContext();
+  const result = await prisma.$transaction(async (tx) => {
+    const [offer, bankBalance] = await Promise.all([
+      tx.storefrontOffer.findFirst({
+        where: {
+          id: payload.offerId,
+          storefront: {
+            campaignId: character.campaignId,
+            status: StorefrontStatus.ACTIVE,
+          },
+        },
+        include: {
+          storefront: true,
+        },
+      }),
+      tx.inventoryLedgerEntry.aggregate({
+        where: {
+          campaignId: character.campaignId,
+          characterId: character.id,
+          scope: HoldingScope.BANK,
+        },
+        _sum: {
+          goldDelta: true,
+        },
+      }),
+    ]);
+
+    if (!offer) {
+      return {
+        ok: false as const,
+        reason: "invalid-player-storefront-state" as const,
+      };
+    }
+
+    const purchasePlan = planPlayerStorefrontPurchase({
+      offer,
+      requestedQuantity: payload.quantity,
+      bankCopperBalance: bankBalance._sum.goldDelta ?? 0,
+    });
+
+    if (!purchasePlan.ok) {
+      return purchasePlan;
+    }
+
+    const stockUpdate = await tx.storefrontOffer.updateMany({
+      where: {
+        id: offer.id,
+        storefrontId: offer.storefrontId,
+        quantity: {
+          gte: payload.quantity,
+        },
+      },
+      data: {
+        quantity: {
+          decrement: payload.quantity,
+        },
+        weeklyPurchasedCount: {
+          increment: payload.quantity,
+        },
+        lifetimePurchasedCount: {
+          increment: payload.quantity,
+        },
+        negotiatedPriceGold: null,
+        negotiatedByName: null,
+        negotiationNote: null,
+      },
+    });
+
+    if (stockUpdate.count !== 1) {
+      return {
+        ok: false as const,
+        reason: "invalid-player-storefront-state" as const,
+      };
+    }
+
+    let lootItemId = purchasePlan.lootItemIntent.existingLootItemId;
+
+    if (!lootItemId && purchasePlan.lootItemIntent.createLootItem) {
+      const createLootItem = purchasePlan.lootItemIntent.createLootItem;
+      const lootItem = await tx.lootItem.create({
+        data: {
+          campaignId: character.campaignId,
+          name: createLootItem.name,
+          rarity: offer.rarity,
+          kind: offer.kind,
+          description: createLootItem.description,
+          sourceTag: createLootItem.sourceTag,
+        },
+      });
+
+      lootItemId = lootItem.id;
+      await tx.storefrontOffer.update({
+        where: {
+          id: offer.id,
+        },
+        data: {
+          lootItemId,
+        },
+      });
+    }
+
+    await tx.inventoryLedgerEntry.create({
+      data: {
+        campaignId: character.campaignId,
+        characterId: character.id,
+        lootItemId,
+        scope: HoldingScope.BANK,
+        entryType: LedgerEntryType.PURCHASE,
+        quantity: purchasePlan.ledgerIntent.quantity,
+        goldDelta: purchasePlan.ledgerIntent.goldDelta,
+        note: `Purchased ${payload.quantity}x ${offer.itemName} from ${offer.storefront.name}.`,
+      },
+    });
+
+    await tx.storefront.update({
+      where: {
+        id: offer.storefrontId,
+      },
+      data: {
+        cashOnHand: {
+          increment: -purchasePlan.ledgerIntent.goldDelta,
+        },
+      },
+    });
+
+    return {
+      ok: true as const,
+    };
+  });
+
+  if (!result.ok) {
+    redirectToPlayerAccountError(result.reason);
+  }
+
+  redirectToPlayerAccountResult("storefront", "purchased");
+}
+
+export async function requestStorefrontSaleAction(formData: FormData) {
+  const parsedPayload = storefrontSellRequestPlayerMutationSchema.safeParse({
+    storefrontId: formData.get("storefrontId"),
+    itemRef: formData.get("itemRef"),
+    quantity: formData.get("quantity"),
+    note: formData.get("note") ?? undefined,
+  });
+  const payload = parsedPayload.success ? parsedPayload.data : null;
+
+  if (!payload) {
+    redirectToPlayerAccountError("invalid-player-storefront-state");
+  }
+
+  const character = await requirePlayerMutationContext();
+  const [rawScope, lootItemId] = payload.itemRef.split(":", 2);
+  const scope = z.nativeEnum(HoldingScope).safeParse(rawScope).success
+    ? (rawScope as HoldingScope)
+    : null;
+
+  if (!scope || !lootItemId) {
+    redirectToPlayerAccountError("invalid-player-storefront-state");
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const [storefront, lootItem, heldQuantity, existingRequest] = await Promise.all([
+      tx.storefront.findFirst({
+        where: {
+          id: payload.storefrontId,
+          campaignId: character.campaignId,
+          status: StorefrontStatus.ACTIVE,
+        },
+      }),
+      tx.lootItem.findFirst({
+        where: {
+          id: lootItemId,
+          campaignId: character.campaignId,
+        },
+      }),
+      tx.inventoryLedgerEntry.aggregate({
+        where: {
+          campaignId: character.campaignId,
+          characterId: character.id,
+          lootItemId,
+          scope,
+        },
+        _sum: {
+          quantity: true,
+        },
+      }),
+      tx.storefrontSellRequest.findFirst({
+        where: {
+          campaignId: character.campaignId,
+          storefrontId: payload.storefrontId,
+          characterId: character.id,
+          lootItemId,
+          sellScope: scope,
+          status: "PENDING",
+        },
+      }),
+    ]);
+
+    if (
+      !storefront ||
+      !lootItem ||
+      existingRequest ||
+      (heldQuantity._sum.quantity ?? 0) < payload.quantity
+    ) {
+      return {
+        ok: false as const,
+        reason: "invalid-player-storefront-state" as const,
+      };
+    }
+
+    const fit = scoreStorefrontItemFit(storefront.shopType, {
+      kind: lootItem.kind,
+      rarity: lootItem.rarity,
+      name: lootItem.name,
+      description: lootItem.description,
+      sourceTag: lootItem.sourceTag,
+    });
+    const priceSuggestion = suggestPlayerSellPrice({
+      fitScore: fit.score,
+      currentPriceCopper: lootItem.goldValue ?? 25,
+      storeCashCopper: storefront.cashOnHand,
+    });
+
+    if (fit.tier === "POOR" || priceSuggestion.suggestedPriceCopper <= 0) {
+      return {
+        ok: false as const,
+        reason: "invalid-player-storefront-state" as const,
+      };
+    }
+
+    await tx.storefrontSellRequest.create({
+      data: {
+        campaignId: character.campaignId,
+        storefrontId: storefront.id,
+        characterId: character.id,
+        lootItemId: lootItem.id,
+        sellScope: scope,
+        quantity: payload.quantity,
+        suggestedPriceGold: priceSuggestion.suggestedPriceCopper * payload.quantity,
+        fitScore: fit.score,
+        note:
+          payload.note?.trim() ||
+          `Player offered ${payload.quantity} from ${scope.toLowerCase()}.`,
+      },
+    });
+
+    return {
+      ok: true as const,
+    };
+  });
+
+  if (!result.ok) {
+    redirectToPlayerAccountError(result.reason);
+  }
+
+  redirectToPlayerAccountResult("storefront", "sale-requested");
+}
+
+export async function requestCraftingJobAction(formData: FormData) {
+  const parsedPayload = craftingRequestPlayerMutationSchema.safeParse({
+    recipeId: formData.get("recipeId"),
+    notes: formData.get("notes") ?? undefined,
+  });
+  const payload = parsedPayload.success ? parsedPayload.data : null;
+
+  if (!payload) {
+    redirectToPlayerAccountError("invalid-player-crafting-state");
+  }
+
+  const character = await requirePlayerMutationContext();
+  const [recipe, ledgerEntries, existingJob] = await Promise.all([
+    prisma.craftingRecipe.findFirst({
+      where: {
+        id: payload.recipeId,
+        campaignId: character.campaignId,
+        status: CraftingRecipeStatus.ACTIVE,
+      },
+    }),
+    prisma.inventoryLedgerEntry.findMany({
+      where: {
+        campaignId: character.campaignId,
+        characterId: character.id,
+      },
+      include: {
+        lootItem: true,
+      },
+    }),
+    prisma.craftingJob.findFirst({
+      where: {
+        campaignId: character.campaignId,
+        characterId: character.id,
+        recipeId: payload.recipeId,
+        status: CraftingJobStatus.IN_PROGRESS,
+      },
+      select: {
+        id: true,
+      },
+    }),
+  ]);
+
+  if (existingJob) {
+    redirectToPlayerAccountError("invalid-player-crafting-state");
+  }
+
+  const plan = planPlayerCraftingRequest({
+    recipe,
+    craftingMaterialHoldings: deriveCraftingHoldings(ledgerEntries),
+    currentBankCopperBalance: ledgerEntries
+      .filter((entry) => entry.scope === HoldingScope.BANK)
+      .reduce((sum, entry) => sum + entry.goldDelta, 0),
+    requestedNotes: payload.notes,
+  });
+
+  if (!plan.ok) {
+    redirectToPlayerAccountError(plan.reason);
+  }
+
+  await prisma.craftingJob.create({
+    data: {
+      campaignId: character.campaignId,
+      recipeId: plan.jobIntent.recipeId,
+      characterId: character.id,
+      status: CraftingJobStatus.IN_PROGRESS,
+      notes: plan.jobIntent.notes,
+    },
+  });
+
+  redirectToPlayerAccountResult("crafting", "requested");
 }
